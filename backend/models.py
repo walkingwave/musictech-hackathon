@@ -92,6 +92,8 @@ class StemResult:
     prompt: str
     noise: float
     seed: int
+    duration: float = 0.0  # length of the generated audio, seconds
+    n_bars: int = 0  # bars the stem spans (may exceed the input vocal)
 
     def to_dict(self) -> dict:
         return asdict(self)

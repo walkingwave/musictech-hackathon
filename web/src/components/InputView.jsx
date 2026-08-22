@@ -21,6 +21,8 @@ export default function InputView({
   onPrompt,
   selected,
   onToggleStem,
+  bars,
+  onBars,
   onSubmitVocal,
   onGenerate,
   generating,
@@ -48,6 +50,8 @@ export default function InputView({
           onBackend={onBackend}
           selected={selected}
           onToggleStem={onToggleStem}
+          bars={bars}
+          onBars={onBars}
           onGenerate={onGenerate}
           generating={generating}
         />
@@ -63,6 +67,8 @@ function Settings({
   onBackend,
   selected,
   onToggleStem,
+  bars,
+  onBars,
   onGenerate,
   generating,
 }) {
@@ -135,6 +141,18 @@ function Settings({
                 </option>
               ))}
             </select>
+            <div className="row" style={{ marginTop: '0.6rem' }}>
+              <span className="unit">length</span>
+              <input
+                type="number"
+                min="1"
+                max="128"
+                value={bars}
+                onChange={(e) => onBars(Number(e.target.value))}
+                style={{ width: '5rem' }}
+              />
+              <span className="unit">bars</span>
+            </div>
           </div>
 
           <div className="field divide">

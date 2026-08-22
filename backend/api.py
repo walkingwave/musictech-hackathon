@@ -42,6 +42,8 @@ class GenerateRequest(BaseModel):
     noise: float | None = None  # None -> per-part default
     backend: str | None = None
     seed: int | None = None
+    bars: int | None = None  # target length in bars; None -> input vocal length
+    start_bar: int = 0  # chord-grid offset, for section regeneration
 
 
 class AnalysisEdit(BaseModel):
@@ -139,13 +141,17 @@ def generate(request: GenerateRequest) -> dict:
             noise=request.noise,
             backend=request.backend,
             seed=request.seed,
+            bars=request.bars,
+            start_bar=request.start_bar,
         )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
     return {
         **result.to_dict(),
-        "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav",
+        # The stem file is per-part and overwritten on each call; the seed
+        # query busts the browser cache so a regenerate fetches fresh audio.
+        "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav?v={result.seed}",
     }
 
 

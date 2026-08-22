@@ -10,6 +10,24 @@ export async function blobToWav(blob) {
   return encodeWav(decoded);
 }
 
+// Encode a decoded AudioBuffer (or a region of one) to a WAV Blob, for
+// per-clip download straight from what is loaded in the timeline.
+export function audioBufferToWav(buffer, offsetSec = 0, durationSec = null) {
+  if (offsetSec === 0 && durationSec == null) return encodeWav(buffer);
+  const sr = buffer.sampleRate;
+  const startFrame = Math.floor(offsetSec * sr);
+  const frames = durationSec == null ? buffer.length - startFrame : Math.floor(durationSec * sr);
+  const region = new AudioBuffer({
+    numberOfChannels: buffer.numberOfChannels,
+    length: frames,
+    sampleRate: sr,
+  });
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    region.copyToChannel(buffer.getChannelData(c).subarray(startFrame, startFrame + frames), c);
+  }
+  return encodeWav(region);
+}
+
 function encodeWav(buffer) {
   const numChannels = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;

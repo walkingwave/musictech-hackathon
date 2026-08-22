@@ -3,7 +3,7 @@
 export default function Header({ view, onView, sessionName, tracksReady }) {
   const tabs = [
     { id: 'input', label: 'Input', enabled: true },
-    { id: 'tracks', label: 'Tracks', enabled: tracksReady },
+    { id: 'studio', label: 'Studio', enabled: tracksReady },
   ];
   return (
     <header className="header">

@@ -1,17 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as apiClient from './api.js';
 import { blobToWav } from './wav.js';
-import { useMultitrack } from './useMultitrack.js';
+import { useTimeline } from './useTimeline.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
-import TracksView from './components/TracksView.jsx';
+import Studio from './components/Studio.jsx';
+
+const PART_LABEL = { bass: 'Bass', drums: 'Drums', piano: 'Piano', harmony: 'Harmony' };
 
 export default function App() {
   const [view, setView] = useState('input');
   const [backends, setBackends] = useState([]);
   const [backend, setBackend] = useState(() => {
-    // Default to the local model. 'mock' was an earlier default; drop it so
-    // stale storage does not keep the app on the placeholder backend.
     const stored = localStorage.getItem('backend');
     return stored && stored !== 'mock' ? stored : 'local';
   });
@@ -20,29 +20,26 @@ export default function App() {
   const [fileName, setFileName] = useState(null);
   const [prompt, setPrompt] = useState('');
   const [selected, setSelected] = useState(() => new Set(['bass', 'drums', 'piano', 'harmony']));
-  const [stems, setStems] = useState({}); // part -> result
-  const [busyPart, setBusyPart] = useState(null);
+  const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
 
-  const engine = useMultitrack();
+  const engine = useTimeline();
+  const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
+  const vocalAddedRef = useRef(false);
 
   const flash = useCallback((message) => {
     setToast(message);
     window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
   }, []);
 
-  // The server forgets a session if it restarts. Rather than surface a raw
-  // 404, drop back to the input view and ask for a fresh recording.
-  const isLostSession = (error) =>
-    /404|no such session/i.test(error.message || '');
-
+  const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
     setSessionId(null);
     setAnalysis(null);
     setFileName(null);
-    setStems({});
     setView('input');
+    vocalAddedRef.current = false;
     flash('Session expired — record or upload again');
   }, [flash]);
 
@@ -75,16 +72,14 @@ export default function App() {
   const submitVocal = async (blob, filename) => {
     flash('Analyzing…');
     try {
-      // Re-encode to WAV in the browser — the backend has no ffmpeg and
-      // libsndfile cannot read the recorder's webm/opus.
       const wav = await blobToWav(blob);
       const wavName = filename.replace(/\.[^.]+$/, '') + '.wav';
       const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
       setFileName(wavName);
-      setStems({});
-      engine.loadBuffer('vocal', apiClient.vocalUrl(result.session_id));
+      vocalWavRef.current = wav;
+      vocalAddedRef.current = false;
       flash('Analyzed — set your prompt and generate');
     } catch (error) {
       setFileName(null);
@@ -92,51 +87,55 @@ export default function App() {
     }
   };
 
-  // Generate one stem, loading it into the mixer. Shared by the initial
-  // batch and per-stem regenerate.
-  const generateOne = async (part, opts = {}) => {
-    setBusyPart(part);
-    try {
+  // One network generate. Returns the raw result; never touches timeline state
+  // so it can be reused for the initial batch, clip regen, and section regen.
+  const generateStem = useCallback(
+    async (opts) => {
       const result = await apiClient.generate({
         session_id: sessionId,
-        part,
-        // Per-track regenerate can override the prompt and divergence.
+        part: opts.part,
         style: opts.style != null ? opts.style : prompt,
         noise: opts.noise,
+        bars: opts.bars,
+        start_bar: opts.start_bar,
         backend,
         seed: opts.seed,
       });
-      setStems((prev) => ({ ...prev, [part]: result }));
-      if (result.backend_used !== backend) {
-        flash(`${backend} unavailable — used ${result.backend_used}`);
-      }
-      await engine.loadBuffer(part, result.audio_url);
-      return true;
-    } catch (error) {
-      if (isLostSession(error)) {
-        resetSession();
-        return false;
-      }
-      flash(`${part} failed — ${error.message}`);
-      return true;
-    } finally {
-      setBusyPart(null);
-    }
-  };
+      return result;
+    },
+    [sessionId, prompt, backend],
+  );
+
+  const ensureVocalTrack = useCallback(async () => {
+    if (vocalAddedRef.current || !vocalWavRef.current) return;
+    const buffer = await engine.context().decodeAudioData(await vocalWavRef.current.arrayBuffer());
+    engine.addTrackWithClip('Vocal', 'vocal', buffer, { start: 0, part: 'vocal' });
+    vocalAddedRef.current = true;
+  }, [engine]);
 
   const generate = async (analysisEdit) => {
     setGenerating(true);
     try {
-      const updated = await apiClient.updateAnalysis(sessionId, analysisEdit);
-      setAnalysis(updated);
-      // Generate selected stems in sequence — the local backend is single
-      // model, so parallel calls would just contend. Stop early if the
-      // session was lost mid-batch.
+      await apiClient.updateAnalysis(sessionId, analysisEdit);
+      await ensureVocalTrack();
+      // Sequential — the local model is single-instance, parallel calls
+      // would just contend for it.
       for (const part of selected) {
-        const ok = await generateOne(part);
-        if (!ok) return;
+        const result = await generateStem({ part, style: prompt, bars });
+        const buffer = await engine
+          .context()
+          .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
+        engine.addTrackWithClip(PART_LABEL[part] || part, part, buffer, {
+          start: 0,
+          part,
+          prompt,
+          seed: result.seed,
+          backendUsed: result.backend_used,
+          duration: result.duration || buffer.duration,
+          startBar: 0,
+        });
       }
-      setView('tracks');
+      setView('studio');
     } catch (error) {
       if (isLostSession(error)) resetSession();
       else flash(`Could not generate — ${error.message}`);
@@ -145,13 +144,26 @@ export default function App() {
     }
   };
 
+  // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
+  const studioGenerate = useCallback(
+    async (opts) => {
+      try {
+        return await generateStem(opts);
+      } catch (error) {
+        if (isLostSession(error)) resetSession();
+        throw error;
+      }
+    },
+    [generateStem, resetSession],
+  );
+
   return (
     <>
       <Header
         view={view}
         onView={setView}
         sessionName={fileName || 'Untitled'}
-        tracksReady={Object.keys(stems).length > 0}
+        tracksReady={engine.tracks.length > 0}
       />
 
       {view === 'input' ? (
@@ -165,22 +177,18 @@ export default function App() {
           onPrompt={setPrompt}
           selected={selected}
           onToggleStem={toggleStem}
+          bars={bars}
+          onBars={setBars}
           onSubmitVocal={submitVocal}
           onGenerate={generate}
           generating={generating}
         />
       ) : (
-        <TracksView
+        <Studio
           engine={engine}
-          stems={stems}
-          onRegenerate={(part, opts) =>
-            generateOne(part, { ...opts, seed: Math.floor(Math.random() * 1e9) })
-          }
-          busyPart={busyPart}
-          defaultPrompt={prompt}
-          stemUrl={(part) => apiClient.stemUrl(sessionId, part)}
-          vocalUrl={sessionId ? apiClient.vocalUrl(sessionId) : null}
-          exportHref={sessionId ? apiClient.exportUrl(sessionId) : null}
+          bpm={analysis?.bpm || 120}
+          onGenerateStem={studioGenerate}
+          sessionReady={!!sessionId}
         />
       )}
 
