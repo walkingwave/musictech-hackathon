@@ -337,16 +337,23 @@ export default function Studio({
     try {
       for (const [i, spec] of plan.tracks.entries()) {
         const part = spec.part;
+        const label = spec.name || part;
         // Send the style only when this request actually carries one. Sending
         // an empty string would re-pin the arrangement to "no style" and
         // reset the groove for every part added afterwards.
         const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
-        setStatus(`Generating ${part} (${i + 1}/${plan.tracks.length})…`);
+        setStatus(`Generating ${label} (${i + 1}/${plan.tracks.length})…`);
         // Sequential on purpose: the local model is a single instance, so
         // parallel requests would only contend for it.
-        const result = await onGenerateStem({ part, style, seed: Math.floor(Math.random() * 1e9) });
+        const result = await onGenerateStem({
+          part,
+          style,
+          name: spec.name,
+          instrument: spec.instrument,
+          seed: Math.floor(Math.random() * 1e9),
+        });
         const buffer = await decodeResult(result);
-        addTrackWithClip(part[0].toUpperCase() + part.slice(1), part, buffer, {
+        addTrackWithClip(label[0].toUpperCase() + label.slice(1), part, buffer, {
           start: 0,
           part,
           prompt: style,

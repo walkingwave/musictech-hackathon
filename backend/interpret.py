@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -34,10 +35,24 @@ GROOVE_NAMES = [g.name for g in grooves.ALL]
 
 
 class TrackSpec(BaseModel):
-    part: str = Field(description=f"One of: {', '.join(PARTS)}")
+    part: str = Field(
+        description=f"The arranger to use — one of: {', '.join(PARTS)}. This "
+        "chooses the rhythmic role, not the sound."
+    )
+    name: str = Field(
+        description="Short track name, from what the user asked for, "
+        "e.g. 'xylophone', 'wah bass'."
+    )
+    instrument: str = Field(
+        description="Full description of the sound to generate, e.g. "
+        "'bright wooden xylophone, hard mallets' or 'wah-wah electric bass, "
+        "envelope filter, funky'. This REPLACES the default instrument "
+        "description, so describe the instrument completely."
+    )
     style: str = Field(
-        description="Sound and playing style for this part specifically, "
-        "e.g. 'muted fingerstyle, warm tone'. May be empty."
+        default="",
+        description="Playing style for this track only, if different from the "
+        "arrangement's. Usually empty.",
     )
 
 
@@ -68,9 +83,21 @@ Rules:
 - Pick the groove that matches the requested genre. This matters more than
   it looks: the groove decides where notes fall, and that is what makes a
   genre audible. If no genre is implied, use "straight".
-- If the user asks for an instrument that is not in the list, map it to the
-  closest available part and say so in `notes` — e.g. organ or Rhodes to
-  piano, strings or choir to harmony, synth bass to bass.
+- `part` is only the RHYTHMIC ROLE, not the sound. Any instrument can be
+  generated — pick whichever part plays the role you want it to play, then
+  describe the actual instrument in `instrument`:
+    bass    single low line
+    piano   chords, or a pitched melodic/mallet instrument (xylophone,
+            marimba, vibraphone, glockenspiel, harp, organ, Rhodes)
+    guitar  chords in a mid register, plucked or strummed
+    drums   unpitched percussion of any kind (kit, cymbals, timpani,
+            congas, tambourine, shaker)
+    harmony sustained pads, strings, choir, brass swells
+- Never drop an instrument the user asked for. Produce one track for every
+  one of them, and if the user says "4 more tracks", return four.
+- The user may want several tracks sharing a part — a xylophone and a piano
+  are both `part: "piano"`. That is fine and expected. Give each a distinct
+  `name`.
 - Infer tempo and key only when the user implies them ("slow", "in D minor",
   "90 BPM"). Otherwise leave them null; the app has its own defaults.
 - Put genre and mood in the top-level `style`. Use a track's own `style`
@@ -189,27 +216,100 @@ def _sanitize(plan: Plan) -> Plan:
 
 # --- keyword fallback ---------------------------------------------------
 
-PART_WORDS = {
-    "bass": ("bassline", "bass line", "bass", "sub", "808"),
-    "drums": ("drums", "drum", "percussion", "beat", "kick", "groove", "kit"),
-    "piano": ("piano", "keys", "keyboard", "rhodes", "wurli", "organ", "chords"),
-    "guitar": ("guitar", "gtr", "strum", "riff"),
-    "harmony": ("harmony", "harmonies", "choir", "pad", "strings", "backing vocal"),
+# Instrument -> (part, description). `part` is the rhythmic role the
+# arranger plays; the description becomes the prompt. Anything not listed
+# here is still handled by the Claude path; this table only has to cover
+# enough that the offline demo is not obviously broken.
+INSTRUMENTS: dict[str, tuple[str, str]] = {
+    # bass role
+    "bass": ("bass", ""),
+    "bassline": ("bass", ""),
+    "wah bass": ("bass", "wah-wah electric bass, envelope filter, funky"),
+    "waw bass": ("bass", "wah-wah electric bass, envelope filter, funky"),
+    "sub": ("bass", "deep sub bass, sine-like, minimal"),
+    "808": ("bass", "808 sub bass, long decay"),
+    "upright bass": ("bass", "upright double bass, woody, fingered"),
+    "synth bass": ("bass", "analog synth bass, saw wave, punchy"),
+    # pitched / mallet -> piano role
+    "piano": ("piano", ""),
+    "keys": ("piano", ""),
+    "rhodes": ("piano", "Rhodes electric piano, warm tines, light chorus"),
+    "wurli": ("piano", "Wurlitzer electric piano, gritty, vibrato"),
+    "organ": ("piano", "drawbar organ, rotary speaker"),
+    "xylophone": ("piano", "bright wooden xylophone, hard mallets"),
+    "marimba": ("piano", "warm marimba, soft mallets, woody"),
+    "vibraphone": ("piano", "vibraphone, motor vibrato, soft mallets"),
+    "vibes": ("piano", "vibraphone, motor vibrato, soft mallets"),
+    "glockenspiel": ("piano", "glockenspiel, bright metallic bells"),
+    "celesta": ("piano", "celesta, delicate bell-like tone"),
+    "harp": ("piano", "concert harp, plucked, resonant"),
+    # guitar role
+    "guitar": ("guitar", ""),
+    "acoustic guitar": ("guitar", "steel-string acoustic guitar, strummed"),
+    "electric guitar": ("guitar", "clean electric guitar, warm amp"),
+    "nylon guitar": ("guitar", "nylon-string classical guitar, fingerpicked"),
+    "banjo": ("guitar", "five-string banjo, bright plucked"),
+    "ukulele": ("guitar", "ukulele, bright nylon strum"),
+    # percussion -> drums role
+    "drums": ("drums", ""),
+    "drum kit": ("drums", ""),
+    "percussion": ("drums", "hand percussion, shakers and woodblocks, dry"),
+    "cymbals": ("drums", "crash and ride cymbals, shimmering, no drums"),
+    "timpani": ("drums", "orchestral timpani, deep resonant mallet hits"),
+    "congas": ("drums", "congas and bongos, warm hand drums"),
+    "tambourine": ("drums", "tambourine, bright jingles"),
+    "shaker": ("drums", "shaker, steady dry rattle"),
+    # sustained -> harmony role
+    "harmony": ("harmony", ""),
+    "choir": ("harmony", "warm choir pad, sustained aahs"),
+    "strings": ("harmony", "string ensemble, legato sustained"),
+    "pad": ("harmony", "soft synth pad, slow attack"),
+    "brass": ("harmony", "brass section swells, warm"),
 }
+
 EVERYTHING = ("full band", "whole band", "everything", "full arrangement")
+DEFAULT_BAND = ("bass", "drums", "piano", "harmony")
+
+
+def _fuzzy_instruments(lower: str, claimed: list[tuple[int, int]]) -> list[tuple[str, str, str]]:
+    """Catch misspelled instrument names the exact matcher missed.
+
+    People type "cylophone". The Claude path reads through that without
+    help; the keyword path would silently drop the track, which is the
+    failure mode worth avoiding — a dropped instrument looks like the app
+    ignoring you.
+    """
+    import difflib
+
+    out: list[tuple[str, str, str]] = []
+    for match in re.finditer(r"[a-z]{5,}", lower):
+        if any(a <= match.start() < b for a, b in claimed):
+            continue
+        close = difflib.get_close_matches(match.group(), INSTRUMENTS, n=1, cutoff=0.8)
+        if close:
+            part, instrument = INSTRUMENTS[close[0]]
+            out.append((part, instrument, close[0]))
+    return out
 
 
 def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
     lower = f" {text.lower()} "
 
     if any(phrase in lower for phrase in EVERYTHING):
-        parts = list(PARTS)
+        found = [(p, "", p) for p in DEFAULT_BAND]
     else:
-        parts = [p for p in PARTS if any(w in lower for w in PART_WORDS[p])]
-
-    # Don't regenerate parts the session already has.
-    if context and context.existing_parts:
-        parts = [p for p in parts if p not in context.existing_parts]
+        # Longest names first, so "wah bass" is not consumed by "bass" and
+        # "acoustic guitar" is not consumed by "guitar".
+        found, claimed = [], []
+        for word in sorted(INSTRUMENTS, key=len, reverse=True):
+            index = lower.find(f" {word}")
+            if index < 0 or any(a <= index < b for a, b in claimed):
+                continue
+            claimed.append((index, index + len(word) + 1))
+            part, instrument = INSTRUMENTS[word]
+            found.append((part, instrument, word))
+        found.sort(key=lambda f: lower.find(f[2]))
+        found.extend(_fuzzy_instruments(lower, claimed))
 
     groove = grooves.for_style(lower)
     style = groove.name if groove.name != "straight" else ""
@@ -221,8 +321,11 @@ def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
         groove = grooves.for_style(style)
 
     return Plan(
-        tracks=[TrackSpec(part=p, style="") for p in parts],
+        tracks=[
+            TrackSpec(part=part, name=word.replace(" ", "-"), instrument=instrument)
+            for part, instrument, word in found
+        ],
         style=style,
         groove=groove.name,
-        notes="" if parts else "No instruments recognised — try naming them, e.g. 'bass and drums'.",
+        notes="" if found else "No instruments recognised — try naming them, e.g. 'bass and drums'.",
     )

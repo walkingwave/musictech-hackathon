@@ -122,6 +122,8 @@ export default function App() {
         noise: opts.noise,
         bars: opts.bars,
         start_bar: opts.start_bar,
+        name: opts.name,
+        instrument: opts.instrument,
         backend,
         seed: opts.seed,
       });

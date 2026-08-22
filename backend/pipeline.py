@@ -118,6 +118,25 @@ def _resolve_arrangement(
     return style, bars
 
 
+def track_name(session: Session, part: Part, requested: str | None) -> str:
+    """A filesystem-safe track name, unique within the session.
+
+    Several tracks can share a part - a xylophone and a piano are both
+    "piano" to the arranger - so names are what keep their files apart.
+    """
+    base = "".join(c for c in (requested or part).lower() if c.isalnum() or c in "-_ ")
+    base = "-".join(base.split()) or part
+
+    existing = set(session.to_dict().get("stems", {}))
+    if base not in existing:
+        return base[:40]
+    for n in range(2, 100):
+        candidate = f"{base[:36]}-{n}"
+        if candidate not in existing:
+            return candidate
+    return base[:40]
+
+
 def generate_stem(
     session: Session,
     part: Part,
@@ -127,6 +146,8 @@ def generate_stem(
     seed: int | None = None,
     bars: int | None = None,
     start_bar: int = 0,
+    name: str | None = None,
+    instrument: str = "",
 ) -> StemResult:
     """Stages 2-5 for one part: arrange, render a guide, generate, align.
 
@@ -148,6 +169,7 @@ def generate_stem(
     noise = noise if noise is not None else config.default_noise(part)
 
     style, bars = _resolve_arrangement(session, style, bars, analysis)
+    name = name or part
 
     # A longer target length (or a section offset) works over a tiled copy of
     # the chord grid; the original vocal analysis stays untouched on disk.
@@ -155,16 +177,16 @@ def generate_stem(
 
     # Stage 2: notes on the grid.
     midi = arrange.arrange(part, work, vocal, sr, style=style)
-    midi_path = session.midi_path(part)
+    midi_path = session.midi_path(name)
     midi.write(str(midi_path))
 
     # Stage 3: a rough audio rendering of those notes.
     guide = render_guide.render(midi, duration=work.duration, part=part)
-    session.write_audio(session.guide_path(part), guide)
+    session.write_audio(session.guide_path(name), guide)
 
     # Stage 4: hand the guide to Stable Audio 3.
-    prompt = prompts.build(part, work, style)
-    log.info("generating %s [%s] seed=%d bars=%d", part, prompt, seed, len(work.bars))
+    prompt = prompts.build(part, work, style, instrument)
+    log.info("generating %s [%s] seed=%d bars=%d", name, prompt, seed, len(work.bars))
 
     raw, backend_used = sa3_backend.generate_with_fallback(
         backend_id=backend,
@@ -177,11 +199,13 @@ def generate_stem(
 
     # Stage 5: correct whatever drift the model introduced.
     stem = align.align(raw, guide, target_bpm=work.bpm)
-    session.write_audio(session.stem_path(part), stem)
+    session.write_audio(session.stem_path(name), stem)
 
     result = StemResult(
         part=part,
-        wav_path=str(session.stem_path(part).relative_to(session.root)),
+        name=name,
+        instrument=instrument,
+        wav_path=str(session.stem_path(name).relative_to(session.root)),
         midi_path=str(midi_path.relative_to(session.root)),
         backend_used=backend_used,
         prompt=prompt,
@@ -312,7 +336,9 @@ def generate_from_reference(
     session.write_audio(path, stem)
 
     return StemResult(
-        part=name,
+        part="bass",  # nominal; a reference clip has no arranger part
+        name=name,
+        instrument=prompt,
         wav_path=str(path.relative_to(session.root)),
         midi_path="",
         backend_used=backend_used,

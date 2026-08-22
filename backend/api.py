@@ -45,6 +45,8 @@ class GenerateRequest(BaseModel):
     seed: int | None = None
     bars: int | None = None  # target length in bars; None -> input vocal length
     start_bar: int = 0  # chord-grid offset, for section regeneration
+    name: str | None = None  # track name; several tracks may share a part
+    instrument: str = ""  # replaces the part's default instrument description
 
 
 class AnalysisEdit(BaseModel):
@@ -144,15 +146,18 @@ def generate(request: GenerateRequest) -> dict:
             seed=request.seed,
             bars=request.bars,
             start_bar=request.start_bar,
+            name=pipeline.track_name(session, request.part, request.name),
+            instrument=request.instrument,
         )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
     return {
         **result.to_dict(),
-        # The stem file is per-part and overwritten on each call; the seed
-        # query busts the browser cache so a regenerate fetches fresh audio.
-        "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav?v={result.seed}",
+        # Files are keyed by track name, not part, so two pitched tracks do
+        # not overwrite each other. The seed query busts the browser cache
+        # so a regenerate fetches fresh audio.
+        "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
     }
 
 

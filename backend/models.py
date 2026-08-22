@@ -112,6 +112,8 @@ class StemResult:
     """One generated backing stem, plus the provenance to reproduce it."""
 
     part: Part
+    name: str  # track name; unique within a session, and the file stem
+    instrument: str  # what the user asked to hear, "" for the part default
     wav_path: str
     midi_path: str
     backend_used: str  # may differ from the request, if fallback fired

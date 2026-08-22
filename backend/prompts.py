@@ -38,13 +38,19 @@ ISOLATION: dict[Part, str] = {
 }
 
 
-def build(part: Part, analysis: Analysis, style: str = "") -> str:
+def build(part: Part, analysis: Analysis, style: str = "", instrument: str = "") -> str:
     """Compose the full prompt for one part.
 
-    `style` is free text from the user, e.g. "bossa nova" or "gritty 70s funk".
+    `style` is free text about the music, e.g. "bossa nova" or "gritty 70s funk".
+
+    `instrument` **replaces** the default instrument phrase rather than
+    adding to it. That matters: asking for a wah bass while the default
+    still says "dry DI signal" hands the model two contradictory
+    descriptions of the same sound, and the default usually wins. When the
+    user names an instrument, it should be the only one described.
     """
     pieces = [
-        INSTRUMENT_PHRASES[part],
+        instrument.strip() or INSTRUMENT_PHRASES[part],
         style.strip(),
         f"{round(analysis.bpm)} BPM",
         f"{analysis.key} {analysis.mode}",

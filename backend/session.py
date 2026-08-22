@@ -65,14 +65,17 @@ class Session:
     def meta_path(self) -> Path:
         return self.root / "meta.json"
 
-    def guide_path(self, part: str) -> Path:
-        return self.root / "guides" / f"{part}.wav"
+    # Keyed by track name, not part. A session can hold several tracks
+    # built on the same part - a xylophone and a piano are both "piano" to
+    # the arranger - and keying by part would silently overwrite them.
+    def guide_path(self, track: str) -> Path:
+        return self.root / "guides" / f"{track}.wav"
 
-    def stem_path(self, part: str) -> Path:
-        return self.root / "stems" / f"{part}.wav"
+    def stem_path(self, track: str) -> Path:
+        return self.root / "stems" / f"{track}.wav"
 
-    def midi_path(self, part: str) -> Path:
-        return self.root / "midi" / f"{part}.mid"
+    def midi_path(self, track: str) -> Path:
+        return self.root / "midi" / f"{track}.mid"
 
     # --- audio ---------------------------------------------------------
 
@@ -118,7 +121,7 @@ class Session:
 
     def save_stem(self, result: StemResult) -> None:
         meta = self._read_meta()
-        meta["stems"][result.part] = result.to_dict()
+        meta["stems"][result.name] = result.to_dict()
         self._write_meta(meta)
 
     def to_dict(self) -> dict:
