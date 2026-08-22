@@ -6,4 +6,3 @@ sessions/
 out/
 .cache/
 .DS_Store
-uv.lock
