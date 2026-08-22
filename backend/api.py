@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import soundfile as sf
 
-from . import config, pipeline, sa3_backend
+from . import config, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -154,6 +154,22 @@ def generate(request: GenerateRequest) -> dict:
         # query busts the browser cache so a regenerate fetches fresh audio.
         "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav?v={result.seed}",
     }
+
+
+class InterpretRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/interpret")
+def interpret_request(request: InterpretRequest) -> dict:
+    """Turn a plain-English request into a generation plan.
+
+    Uses Claude when credentials are available and falls back to keyword
+    matching otherwise, so this endpoint always returns a usable plan
+    rather than failing when offline.
+    """
+    plan = interpret.interpret(request.text)
+    return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
 
 
 class BlankSessionRequest(BaseModel):

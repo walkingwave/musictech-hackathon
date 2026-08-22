@@ -23,6 +23,7 @@ from .models import Analysis, Part
 INSTRUMENT_PHRASES: dict[Part, str] = {
     "bass": "warm fingered electric bass guitar, dry DI signal, clean low end",
     "piano": "acoustic grand piano chords, close-miked, natural room",
+    "guitar": "clean electric guitar chords, warm amp, light room",
     "drums": "tight acoustic drum kit, punchy kick and snare, dry room",
     "harmony": "warm choir pad, sustained aahs, soft attack, close-miked",
 }
@@ -31,6 +32,7 @@ INSTRUMENT_PHRASES: dict[Part, str] = {
 ISOLATION: dict[Part, str] = {
     "bass": "solo bass only, no drums, no vocals, no piano",
     "piano": "solo piano only, no drums, no vocals, no bass",
+    "guitar": "solo guitar only, no drums, no vocals, no bass",
     "drums": "drums only, no melody, no vocals, no bass",
     "harmony": "single sustained layer, no drums, no bass, no percussion",
 }

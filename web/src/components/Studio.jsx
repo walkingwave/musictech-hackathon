@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
 import { parseRequest, describePlan } from '../parseRequest.js';
+import * as apiClient from '../api.js';
 
 // Timeline studio (light, on-brand) with the controls a basic DAW needs:
 // grid, zoom, adjustable snap (incl. off-grid), a move / split / range tool,
@@ -305,17 +306,39 @@ export default function Studio({
     setBusy(false);
   };
 
-  // Agentic bar: parse the request, then generate each part in turn.
+  // Agentic bar: interpret the request, then generate each part in turn.
   const runRequest = async (text) => {
-    const { parts, style } = parseRequest(text);
-    if (!parts.length) {
-      setStatus('No instruments recognised — try "bass, drums and piano".');
+    setBusy(true);
+    setStatus('Interpreting…');
+
+    // Server-side interpretation understands phrasing the keyword matcher
+    // cannot, and can also infer tempo and key. Fall back to the local
+    // parser only if the request itself fails.
+    let plan;
+    try {
+      plan = await apiClient.interpret(text);
+    } catch {
+      const { parts, style } = parseRequest(text);
+      plan = { tracks: parts.map((part) => ({ part, style: '' })), style, notes: '' };
+    }
+
+    if (!plan.tracks.length) {
+      setStatus(plan.notes || 'No instruments recognised — try "bass, drums and piano".');
+      setBusy(false);
       return;
     }
-    setBusy(true);
+
+    // Tempo and key are part of the request too ("90 BPM in D minor"), and
+    // they have to be applied before generating or the guides use the wrong grid.
+    if (plan.bpm) onBpm(plan.bpm);
+    if (plan.key) onKey(plan.key);
+    if (plan.mode) onMode(plan.mode);
+
     try {
-      for (const [i, part] of parts.entries()) {
-        setStatus(`Generating ${part} (${i + 1}/${parts.length})…`);
+      for (const [i, spec] of plan.tracks.entries()) {
+        const part = spec.part;
+        const style = [plan.style, spec.style].filter(Boolean).join(', ');
+        setStatus(`Generating ${part} (${i + 1}/${plan.tracks.length})…`);
         // Sequential on purpose: the local model is a single instance, so
         // parallel requests would only contend for it.
         const result = await onGenerateStem({ part, style, seed: Math.floor(Math.random() * 1e9) });
@@ -329,7 +352,7 @@ export default function Studio({
           duration: result.duration || buffer.duration,
         });
       }
-      setStatus('');
+      setStatus(plan.notes || '');
     } catch (e) {
       setStatus(`Failed — ${e.message}`);
     }

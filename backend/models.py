@@ -12,8 +12,8 @@ from typing import Literal
 
 # The four backing parts we generate. Adding a part means: add it here,
 # add an arranger in arrange.py, and add a prompt template in prompts.py.
-Part = Literal["bass", "piano", "drums", "harmony"]
-PARTS: tuple[Part, ...] = ("bass", "piano", "drums", "harmony")
+Part = Literal["bass", "piano", "guitar", "drums", "harmony"]
+PARTS: tuple[Part, ...] = ("bass", "piano", "guitar", "drums", "harmony")
 
 
 @dataclass

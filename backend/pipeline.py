@@ -107,7 +107,7 @@ def generate_stem(
     work = analysis if bars is None else _extend_analysis(analysis, bars, start_bar)
 
     # Stage 2: notes on the grid.
-    midi = arrange.arrange(part, work, vocal, sr)
+    midi = arrange.arrange(part, work, vocal, sr, style=style)
     midi_path = session.midi_path(part)
     midi.write(str(midi_path))
 
