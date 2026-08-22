@@ -15,10 +15,11 @@ import logging
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import soundfile as sf
 
 from . import config, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
@@ -153,6 +154,85 @@ def generate(request: GenerateRequest) -> dict:
         # query busts the browser cache so a regenerate fetches fresh audio.
         "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav?v={result.seed}",
     }
+
+
+class BlankSessionRequest(BaseModel):
+    bpm: float = 100.0
+    key: str = "A"
+    mode: str = "minor"
+    bars: int = 8
+
+
+@app.post("/api/session/blank")
+def create_blank_session(request: BlankSessionRequest) -> dict:
+    """Start a session with no vocal, for composing from nothing.
+
+    Everything downstream keys off an Analysis, so writing to a project
+    without a recording just means supplying tempo, key and a starting
+    chord grid instead of inferring them.
+    """
+    if not 20 <= request.bpm <= 300:
+        raise HTTPException(400, "bpm must be between 20 and 300")
+    if request.mode not in ("major", "minor"):
+        raise HTTPException(400, "mode must be 'major' or 'minor'")
+    if not 1 <= request.bars <= 128:
+        raise HTTPException(400, "bars must be between 1 and 128")
+
+    session, analysis = pipeline.create_blank_session(
+        bpm=request.bpm, key=request.key, mode=request.mode, bars=request.bars
+    )
+    return {"session_id": session.id, "analysis": analysis.to_dict()}
+
+
+@app.post("/api/generate-from-reference")
+async def generate_from_reference(
+    session_id: str = Form(...),
+    prompt: str = Form(""),
+    noise: float = Form(config.DEFAULT_NOISE),
+    backend: str | None = Form(None),
+    seed: int | None = Form(None),
+    name: str = Form("clip"),
+    audio: UploadFile = File(...),
+) -> dict:
+    """Generate a clip guided by audio the user supplies, not a synthesized guide.
+
+    The studio posts the rendered audio of whichever track was chosen as the
+    reference. Same audio-to-audio mechanism as a normal stem — the reference
+    simply takes the place of the arranger's guide track.
+    """
+    session = _load(session_id)
+
+    reference, sr = sf.read(io.BytesIO(await audio.read()), dtype="float32")
+    if reference.ndim > 1:
+        reference = reference.mean(axis=1)
+    if sr != config.SAMPLE_RATE:
+        import librosa
+
+        reference = librosa.resample(reference, orig_sr=sr, target_sr=config.SAMPLE_RATE)
+
+    try:
+        result = pipeline.generate_from_reference(
+            session,
+            reference=reference,
+            prompt=prompt,
+            noise=noise,
+            backend=backend,
+            seed=seed,
+            name=_safe_name(name),
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        **result.to_dict(),
+        "audio_url": f"/api/session/{session.id}/audio/stems/{_safe_name(name)}.wav",
+    }
+
+
+def _safe_name(name: str) -> str:
+    """Filesystem-safe stem name. These become paths, so no traversal."""
+    cleaned = "".join(c for c in name if c.isalnum() or c in "-_") or "clip"
+    return cleaned[:40]
 
 
 @app.get("/api/session/{session_id}")

@@ -17,6 +17,8 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 let counter = 0;
 const uid = (p) => `${p}-${++counter}`;
 
+const HISTORY_LIMIT = 100;
+
 export function useTimeline() {
   const ctxRef = useRef(null);
   const buffersRef = useRef({}); // clipId -> AudioBuffer
@@ -27,6 +29,54 @@ export function useTimeline() {
   const rafRef = useRef(null);
 
   const [tracks, setTracks] = useState([]);
+
+  // --- undo / redo -------------------------------------------------------
+  //
+  // Snapshots of the whole `tracks` array. Cheap because clips are small
+  // metadata objects; the audio itself lives in buffersRef, keyed by clip
+  // id, and is never freed (see removeClip) so any snapshot stays playable.
+  const pastRef = useRef([]);
+  const futureRef = useRef([]);
+  const [historyTick, setHistoryTick] = useState(0);
+  const bumpHistory = () => setHistoryTick((v) => v + 1);
+
+  // Snapshot the current state as one undo step. Discrete edits call this
+  // themselves; continuous gestures (dragging a clip, trimming an edge)
+  // call it once on pointer-down so a whole drag collapses into one undo
+  // instead of one per mouse-move.
+  const beginGesture = useCallback(() => {
+    setTracks((prev) => {
+      pastRef.current = [...pastRef.current, prev].slice(-HISTORY_LIMIT);
+      futureRef.current = [];
+      return prev;
+    });
+    bumpHistory();
+  }, []);
+
+  const undo = useCallback(() => {
+    setTracks((prev) => {
+      if (!pastRef.current.length) return prev;
+      const restored = pastRef.current[pastRef.current.length - 1];
+      pastRef.current = pastRef.current.slice(0, -1);
+      futureRef.current = [...futureRef.current, prev];
+      return restored;
+    });
+    bumpHistory();
+  }, []);
+
+  const redo = useCallback(() => {
+    setTracks((prev) => {
+      if (!futureRef.current.length) return prev;
+      const restored = futureRef.current[futureRef.current.length - 1];
+      futureRef.current = futureRef.current.slice(0, -1);
+      pastRef.current = [...pastRef.current, prev].slice(-HISTORY_LIMIT);
+      return restored;
+    });
+    bumpHistory();
+  }, []);
+
+  const canUndo = pastRef.current.length > 0;
+  const canRedo = futureRef.current.length > 0;
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [loop, setLoopState] = useState(null); // {a, b} timeline seconds or null
@@ -54,15 +104,17 @@ export function useTimeline() {
 
   const addTrack = useCallback((name, kind) => {
     const id = uid('trk');
+    beginGesture();
     setTracks((prev) => [
       ...prev,
       { id, name, kind: kind || 'audio', muted: false, soloed: false, volume: 1, clips: [] },
     ]);
     return id;
-  }, []);
+  }, [beginGesture]);
 
   const addClip = useCallback((trackId, buffer, meta = {}) => {
     const id = uid('clip');
+    beginGesture();
     buffersRef.current[id] = buffer;
     const clip = {
       id,
@@ -79,13 +131,14 @@ export function useTimeline() {
       prev.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t)),
     );
     return id;
-  }, []);
+  }, [beginGesture]);
 
   // Convenience: create a track for a part and drop one clip on it.
   const addTrackWithClip = useCallback(
     (name, kind, buffer, meta = {}) => {
       const trackId = uid('trk');
       const clipId = uid('clip');
+      beginGesture();
       buffersRef.current[clipId] = buffer;
       const clip = {
         id: clipId,
@@ -104,7 +157,7 @@ export function useTimeline() {
       ]);
       return { trackId, clipId };
     },
-    [],
+    [beginGesture],
   );
 
   const moveClip = useCallback((trackId, clipId, newStart) => {
@@ -122,27 +175,34 @@ export function useTimeline() {
     );
   }, []);
 
-  const removeClip = useCallback((trackId, clipId) => {
-    delete buffersRef.current[clipId];
-    setTracks((prev) =>
-      prev.map((t) =>
-        t.id === trackId ? { ...t, clips: t.clips.filter((c) => c.id !== clipId) } : t,
-      ),
-    );
-  }, []);
+  // Buffers are deliberately NOT freed on delete: an undo has to be able to
+  // bring the clip back, and the audio is the one part it cannot rebuild.
+  // Leaks are bounded by the length of one session.
+  const removeClip = useCallback(
+    (trackId, clipId) => {
+      beginGesture();
+      setTracks((prev) =>
+        prev.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.filter((c) => c.id !== clipId) } : t,
+        ),
+      );
+    },
+    [beginGesture],
+  );
 
-  const removeTrack = useCallback((trackId) => {
-    setTracks((prev) => {
-      const t = prev.find((x) => x.id === trackId);
-      if (t) t.clips.forEach((c) => delete buffersRef.current[c.id]);
-      return prev.filter((x) => x.id !== trackId);
-    });
-  }, []);
+  const removeTrack = useCallback(
+    (trackId) => {
+      beginGesture();
+      setTracks((prev) => prev.filter((x) => x.id !== trackId));
+    },
+    [beginGesture],
+  );
 
   // Replace a time region [regStart, regEnd] (timeline seconds) of one clip
   // with a freshly generated buffer — the section-regenerate splice. Splits
   // the original into head / new / tail clips that share the same buffer.
   const replaceRegion = useCallback((trackId, clipId, regStart, regEnd, newBuffer, meta = {}) => {
+    beginGesture();
     setTracks((prev) =>
       prev.map((t) => {
         if (t.id !== trackId) return t;
@@ -187,7 +247,7 @@ export function useTimeline() {
         return { ...t, clips };
       }),
     );
-  }, []);
+  }, [beginGesture]);
 
   // Patch arbitrary fields of one clip (used by edge-trim: start/offset/duration).
   const updateClip = useCallback((trackId, clipId, patch) => {
@@ -201,42 +261,107 @@ export function useTimeline() {
   }, []);
 
   // Split one clip at a timeline time into two clips sharing the same buffer.
-  const splitClip = useCallback((trackId, clipId, atTime) => {
-    setTracks((prev) =>
-      prev.map((t) => {
-        if (t.id !== trackId) return t;
-        const idx = t.clips.findIndex((c) => c.id === clipId);
-        if (idx < 0) return t;
-        const c = t.clips[idx];
-        if (atTime <= c.start + 0.02 || atTime >= c.start + c.duration - 0.02) return t;
-        const leftDur = atTime - c.start;
-        const rightId = uid('clip');
-        buffersRef.current[rightId] = buffersRef.current[c.id];
-        const left = { ...c, duration: leftDur };
-        const right = {
-          ...c,
-          id: rightId,
-          start: atTime,
-          offset: c.offset + leftDur,
-          duration: c.duration - leftDur,
-        };
-        return { ...t, clips: [...t.clips.slice(0, idx), left, right, ...t.clips.slice(idx + 1)] };
-      }),
-    );
-  }, []);
+  const splitClip = useCallback(
+    (trackId, clipId, atTime) => {
+      beginGesture();
+      setTracks((prev) =>
+        prev.map((t) => {
+          if (t.id !== trackId) return t;
+          const idx = t.clips.findIndex((c) => c.id === clipId);
+          if (idx < 0) return t;
+          const c = t.clips[idx];
+          if (atTime <= c.start + 0.02 || atTime >= c.start + c.duration - 0.02) return t;
+          const leftDur = atTime - c.start;
+          const rightId = uid('clip');
+          buffersRef.current[rightId] = buffersRef.current[c.id];
+          const left = { ...c, duration: leftDur };
+          const right = {
+            ...c,
+            id: rightId,
+            start: atTime,
+            offset: c.offset + leftDur,
+            duration: c.duration - leftDur,
+          };
+          return { ...t, clips: [...t.clips.slice(0, idx), left, right, ...t.clips.slice(idx + 1)] };
+        }),
+      );
+    },
+    [beginGesture],
+  );
 
-  const duplicateClip = useCallback((trackId, clipId) => {
-    setTracks((prev) =>
-      prev.map((t) => {
-        if (t.id !== trackId) return t;
-        const c = t.clips.find((x) => x.id === clipId);
-        if (!c) return t;
-        const copyId = uid('clip');
-        buffersRef.current[copyId] = buffersRef.current[c.id];
-        return { ...t, clips: [...t.clips, { ...c, id: copyId, start: c.start + c.duration }] };
-      }),
-    );
-  }, []);
+  // Cut a selected region out of a clip as its own clip, leaving the head and
+  // tail behind. This is what makes "highlight a section, then drag it away"
+  // work: the caller drags the returned clip immediately afterwards.
+  //
+  // The new id is generated up front and returned synchronously, so the
+  // caller can start moving it before React has applied the state update.
+  const extractRegion = useCallback(
+    (trackId, clipId, a, b) => {
+      const midId = uid('clip');
+      beginGesture();
+      setTracks((prev) =>
+        prev.map((t) => {
+          if (t.id !== trackId) return t;
+          const idx = t.clips.findIndex((c) => c.id === clipId);
+          if (idx < 0) return t;
+          const c = t.clips[idx];
+          const clipEnd = c.start + c.duration;
+          const from = Math.max(c.start, Math.min(a, b));
+          const to = Math.min(clipEnd, Math.max(a, b));
+          if (to - from < 0.02) return t;
+
+          const pieces = [];
+          if (from > c.start + 0.02) {
+            const headId = uid('clip');
+            buffersRef.current[headId] = buffersRef.current[c.id];
+            pieces.push({ ...c, id: headId, duration: from - c.start });
+          }
+
+          buffersRef.current[midId] = buffersRef.current[c.id];
+          pieces.push({
+            ...c,
+            id: midId,
+            start: from,
+            offset: c.offset + (from - c.start),
+            duration: to - from,
+          });
+
+          if (to < clipEnd - 0.02) {
+            const tailId = uid('clip');
+            buffersRef.current[tailId] = buffersRef.current[c.id];
+            pieces.push({
+              ...c,
+              id: tailId,
+              start: to,
+              offset: c.offset + (to - c.start),
+              duration: clipEnd - to,
+            });
+          }
+
+          return { ...t, clips: [...t.clips.slice(0, idx), ...pieces, ...t.clips.slice(idx + 1)] };
+        }),
+      );
+      return midId;
+    },
+    [beginGesture],
+  );
+
+  const duplicateClip = useCallback(
+    (trackId, clipId) => {
+      beginGesture();
+      setTracks((prev) =>
+        prev.map((t) => {
+          if (t.id !== trackId) return t;
+          const c = t.clips.find((x) => x.id === clipId);
+          if (!c) return t;
+          const copyId = uid('clip');
+          buffersRef.current[copyId] = buffersRef.current[c.id];
+          return { ...t, clips: [...t.clips, { ...c, id: copyId, start: c.start + c.duration }] };
+        }),
+      );
+    },
+    [beginGesture],
+  );
 
   const setTrackProp = useCallback((trackId, prop, value) => {
     setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, [prop]: value } : t)));
@@ -375,6 +500,7 @@ export function useTimeline() {
     moveClip,
     updateClip,
     splitClip,
+    extractRegion,
     duplicateClip,
     removeClip,
     removeTrack,
@@ -386,5 +512,11 @@ export function useTimeline() {
     seek,
     loop,
     setLoop,
+    beginGesture,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    historyTick,
   };
 }

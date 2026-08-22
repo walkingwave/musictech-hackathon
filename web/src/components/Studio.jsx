@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
-import { audioBufferToWav } from '../wav.js';
+import { parseRequest, describePlan } from '../parseRequest.js';
 
 // Timeline studio (light, on-brand) with the controls a basic DAW needs:
 // grid, zoom, adjustable snap (incl. off-grid), a move / split / range tool,
@@ -37,7 +37,10 @@ const SNAPS = [
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
-export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMode, detected, onGenerateStem }) {
+export default function Studio({
+  engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
+  onGenerateStem, onGenerateFromReference,
+}) {
   const {
     tracks,
     playing,
@@ -49,11 +52,18 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
     moveClip,
     updateClip,
     splitClip,
+    extractRegion,
     duplicateClip,
     removeClip,
     removeTrack,
     replaceRegion,
     setTrackProp,
+    addTrack,
+    beginGesture,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
     play,
     pause,
     stop,
@@ -90,6 +100,21 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
     const onKey = (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      // Undo/redo first: these carry modifiers and must not fall through to
+      // the single-letter shortcuts below.
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey) return;
+
       if (e.code === 'Space') {
         e.preventDefault();
         playing ? pause() : play();
@@ -103,17 +128,21 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
         if (selClip && selTrack) splitClip(selTrack.id, selClip.id, position);
       } else if (e.key === 'd' || e.key === 'D') {
         if (selClip && selTrack) duplicateClip(selTrack.id, selClip.id);
+      } else if (e.key === 'Escape') {
+        setRegion(null);
       } else if (e.key === '+' || e.key === '=') {
         zoom(1);
       } else if (e.key === '-' || e.key === '_') {
         zoom(-1);
       } else if (e.key === '1') setTool('move');
-      else if (e.key === '2') setTool('split');
-      else if (e.key === '3') setTool('range');
+      else if (e.key === '2') setTool('range');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [playing, pause, play, selClip, selTrack, removeClip, splitClip, duplicateClip, position]);
+  }, [
+    playing, pause, play, selClip, selTrack,
+    removeClip, splitClip, duplicateClip, position, undo, redo,
+  ]);
 
   // Ctrl/Cmd + wheel to zoom around the cursor.
   const onWheel = (e) => {
@@ -236,6 +265,77 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
     }
   };
 
+  // Render a track's audio to a WAV blob, to post as a generation reference.
+  const trackToWav = async (track) => {
+    const { audioBufferToWav } = await import('../wav.js');
+    const clip = track.clips[0];
+    const buffer = clip && getBuffer(clip.id);
+    if (!buffer) throw new Error(`${track.name} has no audio`);
+    return audioBufferToWav(buffer, clip.offset, clip.duration);
+  };
+
+  // "New AI track": generate guided by another track instead of by a guide
+  // synthesized from the chord grid.
+  const generateReferenceTrack = async ({ referenceTrackId, prompt, noise, name }) => {
+    const reference = tracks.find((t) => t.id === referenceTrackId);
+    if (!reference) return;
+    setBusy(true);
+    setStatus(`Generating ${name} from ${reference.name}…`);
+    try {
+      const wav = await trackToWav(reference);
+      const result = await onGenerateFromReference({
+        referenceWav: wav,
+        prompt,
+        noise,
+        name,
+        seed: Math.floor(Math.random() * 1e9),
+      });
+      const buffer = await decodeResult(result);
+      addTrackWithClip(name, 'audio', buffer, {
+        start: reference.clips[0]?.start ?? 0,
+        prompt,
+        seed: result.seed,
+        backendUsed: result.backend_used,
+        duration: result.duration || buffer.duration,
+      });
+      setStatus('');
+    } catch (e) {
+      setStatus(`Failed — ${e.message}`);
+    }
+    setBusy(false);
+  };
+
+  // Agentic bar: parse the request, then generate each part in turn.
+  const runRequest = async (text) => {
+    const { parts, style } = parseRequest(text);
+    if (!parts.length) {
+      setStatus('No instruments recognised — try "bass, drums and piano".');
+      return;
+    }
+    setBusy(true);
+    try {
+      for (const [i, part] of parts.entries()) {
+        setStatus(`Generating ${part} (${i + 1}/${parts.length})…`);
+        // Sequential on purpose: the local model is a single instance, so
+        // parallel requests would only contend for it.
+        const result = await onGenerateStem({ part, style, seed: Math.floor(Math.random() * 1e9) });
+        const buffer = await decodeResult(result);
+        addTrackWithClip(part[0].toUpperCase() + part.slice(1), part, buffer, {
+          start: 0,
+          part,
+          prompt: style,
+          seed: result.seed,
+          backendUsed: result.backend_used,
+          duration: result.duration || buffer.duration,
+        });
+      }
+      setStatus('');
+    } catch (e) {
+      setStatus(`Failed — ${e.message}`);
+    }
+    setBusy(false);
+  };
+
   const loopActive = !!loop;
   const toggleLoop = () => {
     if (loopActive) setLoop(null);
@@ -244,89 +344,129 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
 
   return (
     <div className="studio">
+      {/* Toolbar, grouped: transport | history | edit | ... | session | add.
+          Separators mark the groups so the eye can skip to the one it wants
+          instead of scanning one long undifferentiated row. */}
       <div className="studio-bar">
-        <div className="transport">
-          <button className="t-btn" onClick={playing ? pause : () => play()} title="Space">
+        <div className="bar-group">
+          <button className="t-btn" onClick={playing ? pause : () => play()} title="Play/pause (Space)">
             {playing ? '❚❚' : '▶'}
           </button>
-          <button className="t-btn" onClick={stop}>
+          <button className="t-btn" onClick={stop} title="Stop">
             ■
           </button>
-          <button className={`t-btn${loopActive ? ' on' : ''}`} onClick={toggleLoop} disabled={!region && !loopActive} title="Loop selected range">
+          <button
+            className={`t-btn${loopActive ? ' on' : ''}`}
+            onClick={toggleLoop}
+            disabled={!region && !loopActive}
+            title="Loop the highlighted section"
+          >
             ⟳
           </button>
           <span className="t-time">
-            {fmt(position)} / {fmt(duration)}
+            {fmt(position)} <span className="t-dim">/ {fmt(duration)}</span>
           </span>
-          <span className="t-bpm">{Math.round(bpm)} BPM</span>
         </div>
 
-        <div className="tools">
-          {['move', 'split', 'range'].map((tl, i) => (
-            <button
-              key={tl}
-              className={`tool-btn${tool === tl ? ' on' : ''}`}
-              onClick={() => setTool(tl)}
-              title={`${tl} (${i + 1})`}
-            >
-              {tl}
+        <span className="bar-sep" />
+
+        <div className="bar-group">
+          <button className="t-btn" onClick={undo} disabled={!canUndo} title="Undo (⌘Z)">
+            ↶
+          </button>
+          <button className="t-btn" onClick={redo} disabled={!canRedo} title="Redo (⇧⌘Z)">
+            ↷
+          </button>
+        </div>
+
+        <span className="bar-sep" />
+
+        <div className="bar-group">
+          <div className="tools">
+            {[
+              { id: 'move', label: 'Move', hint: 'Drag clips, drag edges to trim (1)' },
+              { id: 'range', label: 'Select', hint: 'Drag to highlight, drag the highlight out to split (2)' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                className={`tool-btn${tool === t.id ? ' on' : ''}`}
+                onClick={() => setTool(t.id)}
+                title={t.hint}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="snap-ctl" title="Snap clips to this grid division">
+            snap
+            <select value={snapId} onChange={(e) => setSnapId(e.target.value)}>
+              {SNAPS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="zoom-ctl">
+            <button className="t-btn" onClick={() => zoom(-1)} title="Zoom out (−)">
+              −
             </button>
-          ))}
+            <button className="t-btn" onClick={() => zoom(1)} title="Zoom in (+)">
+              +
+            </button>
+          </div>
         </div>
 
-        <label className="snap-ctl">
-          snap
-          <select value={snapId} onChange={(e) => setSnapId(e.target.value)}>
-            {SNAPS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="bar-spacer" />
 
-        <div className="zoom-ctl">
-          <button className="t-btn" onClick={() => zoom(-1)}>
-            −
-          </button>
-          <button className="t-btn" onClick={() => zoom(1)}>
-            +
-          </button>
+        <div className="bar-group">
+          <label className="studio-field" title={detected ? 'detected from your recording' : ''}>
+            bpm
+            <input
+              type="number"
+              min="20"
+              max="300"
+              step="0.1"
+              value={Math.round((bpm || 120) * 10) / 10}
+              onChange={(e) => onBpm(Number(e.target.value))}
+            />
+          </label>
+          <label className="studio-field">
+            key
+            <select value={keyName || 'C'} onChange={(e) => onKey(e.target.value)}>
+              {NOTE_NAMES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <select value={mode || 'major'} onChange={(e) => onMode(e.target.value)}>
+              <option value="major">maj</option>
+              <option value="minor">min</option>
+            </select>
+          </label>
         </div>
 
-        <label className="studio-field" title={detected ? 'auto-detected' : ''}>
-          bpm
-          <input
-            type="number"
-            min="20"
-            max="300"
-            step="0.1"
-            value={Math.round((bpm || 120) * 10) / 10}
-            onChange={(e) => onBpm(Number(e.target.value))}
+        <span className="bar-sep" />
+
+        <div className="bar-group">
+          <AddTrackMenu
+            tracks={tracks}
+            busy={busy}
+            onEmpty={() => addTrack(`Audio ${tracks.length + 1}`, 'audio')}
+            onRecord={onRecorded}
+            onImport={onImport}
+            onAiTrack={generateReferenceTrack}
           />
-        </label>
-        <label className="studio-field">
-          key
-          <select value={keyName || 'C'} onChange={(e) => onKey(e.target.value)}>
-            {NOTE_NAMES.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-          <select value={mode || 'major'} onChange={(e) => onMode(e.target.value)}>
-            <option value="major">maj</option>
-            <option value="minor">min</option>
-          </select>
-        </label>
-
-        <StudioRecorder onRecorded={onRecorded} />
-        <label className="import-btn">
-          Import
-          <input type="file" accept="audio/*" hidden onChange={(e) => onImport(e.target.files[0])} />
-        </label>
-        <div className="studio-status">{status}</div>
+        </div>
       </div>
+
+      {/* Describe a whole arrangement in words. Sits below the toolbar,
+          full width, because it is the primary way in for someone starting
+          from nothing rather than from a recording. */}
+      <AskBar busy={busy} onRun={runRequest} status={status} />
 
       <div className="arrangement">
         <div className="headers" style={{ width: HEADER_W }}>
@@ -381,7 +521,14 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
                   }}
                   onMove={(clipId, s) => moveClip(t.id, clipId, s)}
                   onTrim={(clip, side, tt) => trimClip(t.id, clip, side, tt)}
-                  onSplit={(clipId, at) => splitClip(t.id, clipId, at)}
+                  onBeginGesture={beginGesture}
+                  onExtract={(clipId, a, b) => {
+                    const newId = extractRegion(t.id, clipId, a, b);
+                    setSelected({ trackId: t.id, clipId: newId });
+                    setRegion(null);
+                    return newId;
+                  }}
+                  onMoveById={(clipId, s) => moveClip(t.id, clipId, s)}
                   onRange={(clipId, a, b) => setRegion({ clipId, a, b })}
                 />
               ))}
@@ -417,6 +564,155 @@ export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMod
   );
 }
 
+// Describe an arrangement in words; parse it into parts + style and
+// generate each one. The plan is shown before you commit, because a
+// misread request costs a minute of generation.
+function AskBar({ busy, onRun, status }) {
+  const [text, setText] = useState('');
+  const plan = text.trim() ? parseRequest(text) : null;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!busy && text.trim()) onRun(text);
+  };
+
+  return (
+    <form className="askbar" onSubmit={submit}>
+      <input
+        className="ask-input"
+        placeholder="Describe what you want — “bass, drums and piano, bossa nova”"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={busy}
+      />
+      <button className="ask-go" disabled={busy || !plan?.parts.length}>
+        {busy ? '…' : 'Generate'}
+      </button>
+      <span className="ask-plan">{status || (plan ? describePlan(plan) : '')}</span>
+    </form>
+  );
+}
+
+// "+ Track" with the four ways to get audio onto the timeline. The AI
+// option needs a reference track, so it is disabled until one exists.
+function AddTrackMenu({ tracks, busy, onEmpty, onRecord, onImport, onAiTrack }) {
+  const [open, setOpen] = useState(false);
+  const [ai, setAi] = useState(false);
+  const withAudio = tracks.filter((t) => t.clips.length > 0);
+
+  return (
+    <div className="add-menu">
+      <button className="t-btn add-btn" onClick={() => setOpen((v) => !v)} disabled={busy}>
+        + Track
+      </button>
+
+      {open && !ai && (
+        <div className="menu-pop">
+          <button
+            onClick={() => {
+              onEmpty();
+              setOpen(false);
+            }}
+          >
+            Empty audio track
+          </button>
+          <label className="menu-file">
+            Import audio file…
+            <input
+              type="file"
+              accept="audio/*"
+              hidden
+              onChange={(e) => {
+                onImport(e.target.files[0]);
+                setOpen(false);
+              }}
+            />
+          </label>
+          <button
+            disabled={!withAudio.length}
+            title={withAudio.length ? '' : 'needs an existing track to reference'}
+            onClick={() => setAi(true)}
+          >
+            AI track from a reference…
+          </button>
+        </div>
+      )}
+
+      {open && ai && (
+        <AiTrackForm
+          tracks={withAudio}
+          onCancel={() => {
+            setAi(false);
+            setOpen(false);
+          }}
+          onSubmit={(spec) => {
+            onAiTrack(spec);
+            setAi(false);
+            setOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AiTrackForm({ tracks, onCancel, onSubmit }) {
+  const [referenceTrackId, setReference] = useState(tracks[0]?.id ?? '');
+  const [prompt, setPrompt] = useState('');
+  const [noise, setNoise] = useState(0.8);
+  const [name, setName] = useState('AI track');
+
+  return (
+    <form
+      className="menu-pop ai-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (referenceTrackId && prompt.trim()) onSubmit({ referenceTrackId, prompt, noise, name });
+      }}
+    >
+      <label>
+        follow
+        <select value={referenceTrackId} onChange={(e) => setReference(e.target.value)}>
+          {tracks.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        name
+        <input value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <textarea
+        rows={2}
+        placeholder="what should it sound like? e.g. “gritty analog synth bass”"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+      />
+      <label className="ai-noise">
+        divergence <b>{noise.toFixed(2)}</b>
+        <input
+          type="range"
+          min="0.6"
+          max="0.95"
+          step="0.05"
+          value={noise}
+          onChange={(e) => setNoise(Number(e.target.value))}
+        />
+      </label>
+      <div className="ai-actions">
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="accent" disabled={!prompt.trim()}>
+          Generate
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function Lane({
   track,
   height,
@@ -432,7 +728,9 @@ function Lane({
   onSelect,
   onMove,
   onTrim,
-  onSplit,
+  onBeginGesture,
+  onExtract,
+  onMoveById,
   onRange,
 }) {
   const barPx = secondsPerBar * pps;
@@ -465,9 +763,13 @@ function Lane({
           selected={selectedClipId === c.id}
           region={region?.clipId === c.id ? region : null}
           onSelect={() => onSelect(c.id)}
-          onMove={(s) => onMove(c.id, s)}
+          onMove={(s) => {
+            onBeginGesture();
+            onMove(c.id, s);
+          }}
+          onMoveById={onMoveById}
           onTrim={(side, tt) => onTrim(c, side, tt)}
-          onSplit={(at) => onSplit(c.id, at)}
+          onExtract={(a, b) => onExtract(c.id, a, b)}
           onRange={(a, b) => onRange(c.id, a, b)}
         />
       ))}
@@ -556,14 +858,16 @@ function ClipInspector({
 
   const isPart = track.kind !== 'audio';
   const download = () => {
-    if (!buffer) return;
-    const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
-    const url = URL.createObjectURL(wav);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${track.name}.wav`;
-    a.click();
-    URL.revokeObjectURL(url);
+    import('../wav.js').then(({ audioBufferToWav }) => {
+      if (!buffer) return;
+      const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
+      const url = URL.createObjectURL(wav);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${track.name}.wav`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
   };
   const regionBars = region ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar)) : 0;
 

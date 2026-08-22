@@ -21,6 +21,7 @@ from .analysis import analyze
 from .config import SAMPLE_RATE
 from .models import Analysis, Bar, Part, StemResult
 from .session import Session
+from .theory import note_to_pitch_class, pitch_class_to_note
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +145,136 @@ def generate_stem(
     )
     session.save_stem(result)
     return result
+
+
+# Flat spellings, for keys where a musician expects them. The parser reads
+# either, but a minor-key grid showing "A#" instead of "Bb" reads as a bug.
+FLAT_NAMES = {1: "Db", 3: "Eb", 6: "Gb", 8: "Ab", 10: "Bb"}
+
+
+def _chord_name(pitch_class: int, mode: str) -> str:
+    if mode == "minor" and pitch_class in FLAT_NAMES:
+        return FLAT_NAMES[pitch_class]
+    return pitch_class_to_note(pitch_class)
+
+
+def create_blank_session(
+    bpm: float = 100.0,
+    key: str = "A",
+    mode: str = "minor",
+    bars: int = 8,
+) -> tuple[Session, Analysis]:
+    """A session with no vocal, for generating backing from nothing.
+
+    The whole pipeline keys off an Analysis, so composing without a
+    recording just means supplying one directly instead of inferring it.
+    Chords come from a stock progression in the requested key, which the
+    user can edit exactly like a detected one.
+    """
+    seconds_per_bar = (60.0 / bpm) * 4
+    duration = bars * seconds_per_bar
+
+    # A silent "vocal" keeps the session layout uniform: every other stage
+    # can read vocal.wav without caring how the session started.
+    session = Session.create(np.zeros(int(duration * SAMPLE_RATE), dtype=np.float32), SAMPLE_RATE)
+
+    analysis = Analysis(
+        bpm=bpm,
+        downbeat_offset_s=0.0,
+        key=key,
+        mode=mode,
+        duration=duration,
+        bars=[],
+    )
+    # i-VI-III-VII in minor, I-V-vi-IV in major: common enough to be a
+    # reasonable default and easy to recognise as "the starting point".
+    #
+    # Quality is listed per degree rather than derived. In natural minor
+    # only the tonic is minor -- VI, III and VII are all major triads --
+    # and getting that wrong makes the whole progression sound wrong.
+    progression_degrees = (
+        [(0, "m"), (8, ""), (3, ""), (10, "")]
+        if mode == "minor"
+        else [(0, ""), (7, ""), (9, "m"), (5, "")]
+    )
+    tonic = note_to_pitch_class(key)
+    progression = [
+        _chord_name((tonic + step) % 12, mode) + quality
+        for step, quality in progression_degrees
+    ]
+
+    analysis.bars = [
+        Bar(
+            index=i,
+            start=i * seconds_per_bar,
+            end=(i + 1) * seconds_per_bar,
+            chord=progression[i % len(progression)],
+        )
+        for i in range(bars)
+    ]
+
+    session.save_analysis(analysis)
+    log.info("blank session %s: %.1f BPM, %s %s, %d bars", session.id, bpm, key, mode, bars)
+    return session, analysis
+
+
+def generate_from_reference(
+    session: Session,
+    reference: np.ndarray,
+    prompt: str,
+    noise: float = config.DEFAULT_NOISE,
+    backend: str | None = None,
+    seed: int | None = None,
+    name: str = "clip",
+) -> StemResult:
+    """Generate a clip using existing audio as the guide, not a synthesized one.
+
+    Same audio-to-audio mechanism as `generate_stem`, but the caller supplies
+    the reference. That lets the studio say "make something that follows
+    *this* clip" — reharmonizing a bassline over the drums, doubling a part
+    on another instrument — rather than only ever following the arranger's
+    idea of the chord grid.
+
+    The reference is whatever the user picked, so it may be any length; it
+    is aligned to the session grid afterwards exactly like a normal stem.
+    """
+    analysis = session.analysis
+    seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+    duration = len(reference) / SAMPLE_RATE
+
+    # Tempo and key still go in the prompt: the reference constrains rhythm
+    # and harmony, but restating them reduces drift.
+    full_prompt = ", ".join(
+        piece
+        for piece in (prompt.strip(), f"{round(analysis.bpm)} BPM", f"{analysis.key} {analysis.mode}")
+        if piece
+    )
+    log.info("generating from reference [%s] seed=%d", full_prompt, seed)
+
+    raw, backend_used = sa3_backend.generate_with_fallback(
+        backend_id=backend,
+        prompt=full_prompt,
+        init_audio=reference,
+        noise=noise,
+        duration=duration,
+        seed=seed,
+    )
+
+    stem = align.align(raw, reference, target_bpm=analysis.bpm)
+    path = session.stem_path(name)
+    session.write_audio(path, stem)
+
+    return StemResult(
+        part=name,
+        wav_path=str(path.relative_to(session.root)),
+        midi_path="",
+        backend_used=backend_used,
+        prompt=full_prompt,
+        noise=noise,
+        seed=seed,
+        duration=len(stem) / SAMPLE_RATE,
+        n_bars=max(1, round(duration / analysis.seconds_per_bar)),
+    )
 
 
 def mix(session: Session, parts: list[Part], include_vocal: bool = True) -> np.ndarray:

@@ -97,10 +97,26 @@ export default function App() {
 
   // One network generate. Returns the raw result; never touches timeline state
   // so it can be reused for the initial batch, clip regen, and section regen.
+  // Composing without a recording still needs a session, since every stage
+  // keys off an Analysis. Make a blank one on first use.
+  const ensureSession = useCallback(async () => {
+    if (sessionId) return sessionId;
+    const result = await apiClient.createBlankSession({
+      bpm: studioBpm,
+      key: studioKey,
+      mode: studioMode,
+      bars,
+    });
+    setSessionId(result.session_id);
+    setAnalysis(result.analysis);
+    return result.session_id;
+  }, [sessionId, studioBpm, studioKey, studioMode, bars]);
+
   const generateStem = useCallback(
     async (opts) => {
+      const id = sessionId || (await ensureSession());
       const result = await apiClient.generate({
-        session_id: sessionId,
+        session_id: id,
         part: opts.part,
         style: opts.style != null ? opts.style : prompt,
         noise: opts.noise,
@@ -111,7 +127,7 @@ export default function App() {
       });
       return result;
     },
-    [sessionId, prompt, backend],
+    [sessionId, prompt, backend, ensureSession],
   );
 
   const ensureVocalTrack = useCallback(async () => {
@@ -151,6 +167,29 @@ export default function App() {
       setGenerating(false);
     }
   };
+
+  // Generate guided by an existing track's audio rather than a synthesized
+  // guide. Creates a blank session first if the user never uploaded a vocal.
+  const studioGenerateFromReference = useCallback(
+    async (opts) => {
+      const id = sessionId || (await ensureSession());
+      try {
+        return await apiClient.generateFromReference({
+          sessionId: id,
+          referenceWav: opts.referenceWav,
+          prompt: opts.prompt,
+          noise: opts.noise,
+          backend,
+          seed: opts.seed,
+          name: opts.name,
+        });
+      } catch (error) {
+        if (isLostSession(error)) resetSession();
+        throw error;
+      }
+    },
+    [sessionId, backend, resetSession, ensureSession],
+  );
 
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
   const studioGenerate = useCallback(
@@ -202,6 +241,7 @@ export default function App() {
           onKey={setStudioKey}
           onMode={setStudioMode}
           onGenerateStem={studioGenerate}
+          onGenerateFromReference={studioGenerateFromReference}
         />
       )}
 

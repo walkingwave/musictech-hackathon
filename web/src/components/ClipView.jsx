@@ -2,9 +2,14 @@ import { useEffect, useMemo, useRef } from 'react';
 
 // One clip: a block with a title strip, waveform, edge trim handles, and an
 // optional highlighted section. Behaviour depends on the active tool:
-//   move  — drag body to reposition (snapped), drag edges to trim
-//   split — click to cut the clip at the cursor
-//   range — drag to highlight a section (for regen / loop / delete)
+//
+//   move    drag body to reposition (snapped), drag edges to trim
+//   select  drag to highlight a section; drag again *inside* that highlight
+//           to cut it out as its own clip and move it
+//
+// The second gesture is the split: nothing is ever cut by a bare click, so a
+// misplaced click cannot silently chop a clip in half. You choose the region
+// first, see it highlighted, and only then pull it out.
 export default function ClipView({
   clip,
   buffer,
@@ -17,8 +22,9 @@ export default function ClipView({
   region,
   onSelect,
   onMove,
+  onMoveById,
   onTrim,
-  onSplit,
+  onExtract,
   onRange,
 }) {
   const canvasRef = useRef(null);
@@ -74,41 +80,50 @@ export default function ClipView({
   // Timeline seconds from a pointer event, relative to the lane.
   const eventTime = (ev, laneLeft) => (ev.clientX - laneLeft) / pps;
 
-  const onPointerDown = (e) => {
-    e.stopPropagation();
-    onSelect();
-    const laneLeft = e.currentTarget.parentElement.getBoundingClientRect().left;
-
-    if (tool === 'split') {
-      onSplit(snap(eventTime(e, laneLeft)));
-      return;
-    }
-    if (tool === 'range') {
-      const startT = eventTime(e, laneLeft);
-      const move = (ev) => {
-        const cur = eventTime(ev, laneLeft);
-        const a = Math.max(clip.start, snap(Math.min(startT, cur)));
-        const b = Math.min(clip.start + clip.duration, snap(Math.max(startT, cur)));
-        onRange(a, b);
-      };
-      const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
-      return;
-    }
-    // move tool — reposition whole clip
+  // Attach a drag that runs `onDrag(deltaSeconds)` until pointer-up.
+  const dragFrom = (e, onDrag) => {
     const startX = e.clientX;
-    const origStart = clip.start;
-    const move = (ev) => onMove(snap(origStart + (ev.clientX - startX) / pps));
+    const move = (ev) => onDrag((ev.clientX - startX) / pps);
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+  };
+
+  const withinRegion = (t) => region && t >= region.a && t <= region.b;
+
+  const onPointerDown = (e) => {
+    e.stopPropagation();
+    onSelect();
+    const laneLeft = e.currentTarget.parentElement.getBoundingClientRect().left;
+
+    if (tool === 'range') {
+      const startT = eventTime(e, laneLeft);
+
+      // Grabbing inside an existing highlight pulls that section out as its
+      // own clip and drags it. The head and tail stay put.
+      if (withinRegion(startT)) {
+        const from = region.a;
+        const extractedId = onExtract(region.a, region.b);
+        if (extractedId) dragFrom(e, (delta) => onMoveById(extractedId, snap(from + delta)));
+        return;
+      }
+
+      // Otherwise, drag out a new highlight.
+      dragFrom(e, (delta) => {
+        const cur = startT + delta;
+        const a = Math.max(clip.start, snap(Math.min(startT, cur)));
+        const b = Math.min(clip.start + clip.duration, snap(Math.max(startT, cur)));
+        onRange(a, b);
+      });
+      return;
+    }
+
+    // move tool — reposition the whole clip
+    const origStart = clip.start;
+    dragFrom(e, (delta) => onMove(snap(origStart + delta)));
   };
 
   const trimDown = (side) => (e) => {
@@ -129,7 +144,7 @@ export default function ClipView({
 
   return (
     <div
-      className={`clip${selected ? ' selected' : ''}${tool === 'split' ? ' cut' : ''}`}
+      className={`clip${selected ? ' selected' : ''}${tool === 'range' ? ' selecting' : ''}`}
       style={{ left, width, height }}
       onPointerDown={onPointerDown}
     >
@@ -140,8 +155,11 @@ export default function ClipView({
       {region && (
         <div
           className="clip-region"
+          title="drag to pull this section out as its own clip"
           style={{ left: (region.a - clip.start) * pps, width: (region.b - region.a) * pps }}
-        />
+        >
+          <span className="region-grip" />
+        </div>
       )}
       {tool === 'move' && (
         <>
