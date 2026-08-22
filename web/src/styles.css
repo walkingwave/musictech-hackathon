@@ -1,0 +1,313 @@
+/* Editorial / spec-sheet aesthetic, matching the artifact mockup:
+   warm-white page, white cards with hairline borders, sharp corners,
+   monospace uppercase labels, solid-black buttons and chips. */
+
+:root {
+  --bg: #faf9f5;
+  --panel: #ffffff;
+  --ink: #1a1a1a;
+  --line: #e4e1d9;
+  --line-strong: #d5d2c8;
+  --muted: #9b988f;
+  --muted-ink: #6b6860;
+  --badge: #ecebe5;
+  --hot: #d64545;
+
+  --mono: "SF Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Utility for the uppercase spec labels everywhere in the mockup. */
+.mono {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+/* --- header ------------------------------------------------------------ */
+
+.header {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 1.5rem;
+  border-right: 1px solid var(--line);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  font-weight: 600;
+  height: 46px;
+}
+.wordmark .glyph { width: 11px; height: 11px; background: var(--ink); }
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 1.25rem;
+  border-right: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.session .label { color: var(--muted); letter-spacing: 0.12em; }
+.session .value { color: var(--ink); }
+
+.tabs { margin-left: auto; display: flex; }
+.tab {
+  padding: 0 1.75rem;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.tab.active { background: #f1efe9; color: var(--ink); }
+.tab:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* --- layout ------------------------------------------------------------ */
+
+.view {
+  max-width: 760px;
+  margin: 2.25rem auto;
+  padding: 0 1.5rem;
+  display: grid;
+  gap: 1.5rem;
+}
+
+/* --- section card ------------------------------------------------------ */
+
+.card { border: 1px solid var(--line); background: var(--panel); }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.card-head .num { font-weight: 600; }
+.card-head .meta { color: var(--muted); font-size: 0.68rem; }
+.card-body { padding: 1.1rem; }
+
+/* --- buttons ----------------------------------------------------------- */
+
+button {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0.55rem 1rem;
+  border-radius: 0;
+}
+button:hover:not(:disabled) { border-color: var(--ink); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+button.solid { background: var(--ink); color: #fff; border-color: var(--ink); }
+button.solid:hover:not(:disabled) { background: #000; }
+
+.big-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; }
+.big-buttons button, .big-buttons .upload {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 1.4rem;
+  font-size: 0.74rem;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink); }
+.dot.rec { background: var(--hot); }
+.box { width: 11px; height: 11px; border: 1.5px solid var(--ink); }
+
+.upload {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.74rem;
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+}
+.upload:hover { border-color: var(--ink); }
+
+/* --- source file row --------------------------------------------------- */
+
+.file-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) 1fr auto;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  margin-top: 0.9rem;
+}
+.file-meta { padding: 0.7rem 0.9rem; border-right: 1px solid var(--line); }
+.file-name { font-size: 0.85rem; }
+.file-spec { font-family: var(--mono); font-size: 0.66rem; color: var(--muted); letter-spacing: 0.06em; margin-top: 0.2rem; }
+.file-wave { display: flex; align-items: center; padding: 0 0.9rem; overflow: hidden; }
+.file-x {
+  border: none; border-left: 1px solid var(--line); background: transparent;
+  color: var(--muted); font-size: 0.9rem; padding: 0 1rem;
+}
+
+.preview { width: 100%; margin-top: 0.9rem; }
+
+/* --- prompt ------------------------------------------------------------ */
+
+textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 0.8rem 0.9rem;
+  font: 0.9rem/1.5 var(--sans);
+  color: var(--ink);
+  background: var(--panel);
+}
+textarea:focus { outline: none; border-color: var(--ink); }
+.help {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.64rem;
+  color: var(--muted);
+  margin-top: 0.7rem;
+}
+
+/* --- settings grid ----------------------------------------------------- */
+
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4rem 2rem; }
+.settings .divide { border-left: 1px solid var(--line); padding-left: 2rem; margin-left: -1rem; }
+
+.field { display: grid; gap: 0.45rem; }
+.field-label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
+  font-size: 0.66rem; color: var(--muted-ink);
+}
+.field input, .field select {
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 0.5rem 0.6rem;
+  font: 0.95rem var(--mono);
+  color: var(--ink);
+  background: var(--panel);
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--ink); }
+.field .row { display: flex; align-items: center; gap: 0.6rem; }
+.field .row input { width: 5rem; }
+.unit { font-family: var(--mono); font-size: 0.66rem; color: var(--muted); letter-spacing: 0.1em; }
+
+.badge {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 0.6rem; color: var(--muted-ink);
+  background: var(--badge); padding: 0.2rem 0.45rem;
+}
+
+/* --- chips ------------------------------------------------------------- */
+
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 0.66rem; font-weight: 600;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--line-strong);
+  background: var(--panel); color: var(--muted);
+  cursor: pointer;
+}
+.chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* --- chord grid -------------------------------------------------------- */
+
+.chord-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+  gap: 0.4rem;
+}
+.chord-grid input {
+  border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.4rem; text-align: center;
+  font: 0.8rem var(--mono); color: var(--ink); background: var(--panel);
+}
+.chord-grid input:focus { outline: none; border-color: var(--ink); }
+
+/* --- generate bar ------------------------------------------------------ */
+
+.generate-bar {
+  display: flex; align-items: center; gap: 1.5rem;
+  border: 1px solid var(--line); background: var(--panel);
+  padding: 1.1rem;
+}
+.generate-bar button { padding: 0.9rem 1.8rem; font-size: 0.74rem; }
+.generate-bar p { margin: 0; font-size: 0.85rem; color: var(--muted-ink); max-width: 30rem; }
+
+/* --- tracks / mixer ---------------------------------------------------- */
+
+.track {
+  display: grid;
+  grid-template-columns: 6.5rem auto auto 1fr auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.track:last-child { border-bottom: none; }
+.track-name { font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.72rem; }
+.track .toggle { padding: 0.3rem 0.55rem; font-size: 0.62rem; }
+.track .toggle.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.track .volume { width: 100%; accent-color: var(--ink); }
+.track .stem-badge { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); letter-spacing: 0.08em; }
+
+.transport { display: flex; gap: 0.6rem; }
+.export {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
+  font-size: 0.72rem; text-decoration: none;
+  border: 1px solid var(--line-strong); color: var(--ink);
+  padding: 0.55rem 1rem;
+}
+.export:hover { border-color: var(--ink); }
+
+input[type="range"] { accent-color: var(--ink); }
+
+/* --- toast ------------------------------------------------------------- */
+
+.toast {
+  position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: #fff;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em;
+  font-size: 0.66rem;
+  padding: 0.7rem 1.1rem;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+}
+
+.empty {
+  text-align: center; color: var(--muted);
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
+  font-size: 0.7rem; padding: 3rem 0;
+}

@@ -71,11 +71,45 @@ MLX_ROOT = Path(
     )
 )
 
-# Which DiT to run. `medium` (1.4B) fits comfortably on 16GB of unified
-# memory and sounds better; `sm-music` (0.6B) is faster for sweeping
-# parameters. Each DiT pairs with a specific decoder.
-MLX_DIT = os.environ.get("BTG_MLX_DIT", "medium")
+# Which DiT to run. `medium` (1.4B) sounds better and still fits in 16GB
+# of unified memory; `sm-music` (0.6B) is faster for sweeping parameters.
+# Each DiT pairs with a specific decoder.
 MLX_DECODERS = {"sm-music": "same-s", "sm-sfx": "same-s", "medium": "same-l"}
+
+# Filenames the MLX stack expects, per DiT. Used to check what is actually
+# downloaded before selecting one.
+MLX_WEIGHTS = {
+    "medium": ["dit_medium_f16.npz", "same_l_encoder_f32.npz", "same_l_decoder_f32.npz"],
+    "sm-music": ["dit_sm-music_f16.npz", "same_s_encoder_f32.npz", "same_s_decoder_f32.npz"],
+}
+MLX_SHARED_WEIGHTS = ["t5gemma_f16.npz"]
+
+
+def mlx_weights_present(dit: str) -> bool:
+    """Are all the weight files for this DiT on disk and non-empty?
+
+    Worth checking rather than assuming: the MLX CLI silently tries to
+    download anything missing from HuggingFace, which on a slow link looks
+    like a hang rather than an error.
+    """
+    weights = MLX_ROOT / "models" / "mlx"
+    needed = MLX_WEIGHTS.get(dit, []) + MLX_SHARED_WEIGHTS
+    return all((weights / name).is_file() and (weights / name).stat().st_size > 0 for name in needed)
+
+
+def default_mlx_dit() -> str:
+    """Prefer the best DiT whose weights are actually downloaded.
+
+    Defaulting to `medium` unconditionally means a fresh checkout hangs on
+    an 8GB download the first time someone clicks Generate.
+    """
+    override = os.environ.get("BTG_MLX_DIT")
+    if override:
+        return override
+    return next((dit for dit in ("medium", "sm-music") if mlx_weights_present(dit)), "sm-music")
+
+
+MLX_DIT = default_mlx_dit()
 
 
 def ensure_dirs() -> None:

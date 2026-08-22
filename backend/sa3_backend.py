@@ -104,9 +104,10 @@ class LocalBackend:
     note = "free, offline, no account needed"
 
     def available(self) -> bool:
-        return (config.MLX_ROOT / "sa3").is_file() and (
-            config.MLX_ROOT / ".venv" / "bin" / "python"
-        ).is_file()
+        installed = (config.MLX_ROOT / ".venv" / "bin" / "python").is_file()
+        # Weights are checked too, not just the install. The MLX CLI
+        # silently downloads anything missing, which presents as a hang.
+        return installed and config.mlx_weights_present(config.MLX_DIT)
 
     def generate(self, prompt, init_audio, noise, duration, seed):
         with tempfile.TemporaryDirectory() as workdir:

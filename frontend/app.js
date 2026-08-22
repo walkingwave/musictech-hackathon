@@ -248,7 +248,14 @@ async function generatePart(part, row, { style, noise }) {
   const badge = row.querySelector('.badge');
 
   button.disabled = true;
-  button.textContent = 'Generating…';
+
+  // Local generation takes tens of seconds — a static label reads as a
+  // frozen page, so count up while we wait.
+  const startedAt = Date.now();
+  button.textContent = 'Generating… 0s';
+  const ticker = setInterval(() => {
+    button.textContent = `Generating… ${Math.round((Date.now() - startedAt) / 1000)}s`;
+  }, 1000);
 
   try {
     const result = await postJSON('/generate', {
@@ -270,11 +277,12 @@ async function generatePart(part, row, { style, noise }) {
 
     await loadBuffer(part, result.audio_url);
     renderTracks();
-    button.textContent = 'Regenerate';
+    button.textContent = `Regenerate (${Math.round((Date.now() - startedAt) / 1000)}s)`;
   } catch (error) {
     toast(`${part} failed — ${error.message}`);
     button.textContent = 'Generate';
   } finally {
+    clearInterval(ticker);
     button.disabled = false;
   }
 }
