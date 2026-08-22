@@ -75,12 +75,12 @@ Do this early. It is the one setup step that can block on someone else approving
 Faster than the UI when tuning prompts and noise values.
 
 ```bash
-uv run python scripts/make_test_vocal.py            # 8 bars, 100 BPM, A minor
+uv run python scripts/make_test_vocals.py           # 18 fixtures with known BPM/key
 
-uv run btg --input samples/test_vocal.wav --part bass
-uv run btg --input samples/test_vocal.wav --all --backend local
-uv run btg --input samples/test_vocal.wav --part bass --style "bossa nova"
-uv run btg --input samples/test_vocal.wav --part bass --sweep 0.5,0.65,0.8,0.9
+uv run btg --input samples/fixtures/amin_100.wav --part bass
+uv run btg --input samples/fixtures/amin_100.wav --all --backend local
+uv run btg --input samples/fixtures/amin_100.wav --part bass --style "bossa nova"
+uv run btg --input samples/fixtures/amin_100.wav --part bass --sweep 0.5,0.65,0.8,0.9
 ```
 
 `--sweep` is the important one: `noise` (the model's divergence from the guide) is
@@ -114,15 +114,62 @@ sessions/<id>/     vocal, guides, stems, MIDI, and a meta.json provenance record
 3. Add an instrument phrase and an isolation clause in `prompts.py`
 4. Add it to `PARTS` in `frontend/app.js`
 
+## Measuring detection accuracy
+
+Tempo and key detection have a fixture suite with ground truth. **Run this after
+any change to `analysis.py` or `melody.py`** — it is the only way to tell a real
+improvement from a lucky guess on one file.
+
+```bash
+uv run python scripts/make_test_vocals.py   # 18 synthetic vocals, known BPM/key
+uv run python scripts/eval_analysis.py      # score against ground truth
+```
+
+Two tiers. The **easy** tier is clean: steady tempo, melodies that resolve to the
+tonic. The **hard** tier adds what real recordings have — ±3% rubato, room noise,
+detuning, an offset start, and melodies that dwell on the mediant and only touch
+the tonic at phrase endings.
+
+Current: **18/18 tempo, 18/18 key.**
+
+Key detection scores two ways. *Exact* means tonic and mode both right. *Note-set*
+means the right pitches but possibly the wrong tonic — that is the relative-key
+failure (C major for A minor), and it is the one worth watching, because pitch
+histograms alone cannot fix it.
+
+### How key detection works, and why
+
+A key and its relative contain **exactly the same pitches**, so any method that
+scores a pitch histogram is guessing between them. What separates them is where
+the melody *lands*: phrases resolve to the tonic. So `analysis.py` scores each of
+the 24 candidate keys by profile correlation **plus** bonuses for the tonic
+appearing at phrase endings, at the final note, and at the first note.
+
+Ablation on the hard tier:
+
+| Method | hard tier |
+|---|---|
+| Temperley profile + melodic cues (current) | 8/8 |
+| Temperley profile alone | 4/8 |
+| Krumhansl profile alone | 0/8 |
+
 ## Known limitations
 
 - **Chord detection on a solo vocal is weak.** One melody genuinely fits many
-  progressions, and relative major/minor pairs (C major vs A minor) share every
-  note. The UI exposes an editable chord grid for exactly this reason — treat the
-  detected chords as a first guess.
+  progressions. The UI exposes an editable chord grid for exactly this reason —
+  treat the detected chords as a first guess.
 - **4/4 is assumed** throughout.
 - **Harmony depends on clean monophonic pitch tracking.** Noisy or breathy input
   degrades it.
-- `librosa.beat.beat_track` must be given an onset envelope explicitly; letting it
-  derive one from `y` uses median aggregation and reports 0 BPM on sustained
-  material. Both `analysis.py` and `align.py` work around this.
+- Everything above is measured on *synthetic* fixtures. Real voices have more
+  vibrato, breath and consonant noise. Re-check against real recordings.
+
+### Two library traps worth knowing
+
+- `librosa.beat.beat_track` must be given an onset envelope explicitly. Letting it
+  derive one from `y` uses median aggregation, which goes flat on sustained
+  material and reports **0 BPM**. Both `analysis.py` and `align.py` work around it.
+- Pitch contours must be **median-filtered before rounding to semitones**.
+  Vibrato that crosses a semitone boundary otherwise chops one held note into a
+  stutter of fragments, destroying the note-duration evidence key detection
+  depends on. See `SMOOTHING_FRAMES` in `melody.py`.

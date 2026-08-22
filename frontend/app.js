@@ -143,11 +143,23 @@ async function submitVocal(blob, filename) {
 
 // --- step 2: analysis + chord editing -----------------------------------
 
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
 function renderAnalysis() {
   const { bpm, key, mode, bars } = state.analysis;
-  document.getElementById('stat-bpm').textContent = Math.round(bpm);
-  document.getElementById('stat-key').textContent = `${key} ${mode}`;
+
+  document.getElementById('stat-bpm').value = bpm.toFixed(1);
   document.getElementById('stat-bars').textContent = bars.length;
+  document.getElementById('stat-mode').value = mode;
+
+  const keySelect = document.getElementById('stat-key');
+  keySelect.innerHTML = '';
+  NOTE_NAMES.forEach((name) => {
+    const option = document.createElement('option');
+    option.value = option.textContent = name;
+    option.selected = name === key;
+    keySelect.appendChild(option);
+  });
 
   const grid = document.getElementById('chord-grid');
   grid.innerHTML = '';
@@ -160,17 +172,38 @@ function renderAnalysis() {
   });
 }
 
-document.getElementById('save-chords').onclick = async () => {
-  const chords = state.analysis.bars.map((bar) => bar.chord);
+document.getElementById('save-analysis').onclick = async () => {
+  const bpm = Number(document.getElementById('stat-bpm').value);
+
+  // Changing the tempo re-cuts the bar grid server-side, so the chords we
+  // send have to match the *current* bar count. Send them only when the
+  // tempo is unchanged; otherwise save the tempo first and let the
+  // re-rendered grid be edited after.
+  const tempoChanged = Math.abs(bpm - state.analysis.bpm) > 0.05;
+
+  const edit = {
+    bpm,
+    key: document.getElementById('stat-key').value,
+    mode: document.getElementById('stat-mode').value,
+  };
+  if (!tempoChanged) {
+    edit.chords = state.analysis.bars.map((bar) => bar.chord);
+  }
+
   try {
-    state.analysis = await api(`/session/${state.sessionId}/chords`, {
+    state.analysis = await api(`/session/${state.sessionId}/analysis`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chords }),
+      body: JSON.stringify(edit),
     });
-    toast('Chords saved — they apply to the next generation');
+    renderAnalysis();
+    toast(
+      tempoChanged
+        ? 'Tempo saved — bar grid rebuilt, check the chords'
+        : 'Saved — applies to the next generation',
+    );
   } catch (error) {
-    toast(`Could not save chords — ${error.message}`);
+    toast(`Could not save — ${error.message}`);
   }
 };
 

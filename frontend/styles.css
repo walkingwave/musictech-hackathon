@@ -83,10 +83,25 @@ button.recording { background: var(--hot); border-color: var(--hot); color: #fff
 
 /* --- analysis --- */
 
-.stats { display: flex; gap: 2rem; margin-bottom: 1rem; }
-.stats div { display: flex; flex-direction: column; }
+.stats { display: flex; gap: 1.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.stats label { display: flex; flex-direction: column; gap: .15rem; }
 .stats span { font-size: 1.5rem; font-weight: 600; }
 .stats small { color: var(--dim); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+
+.stats input, .stats select {
+  background: #22242f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.35rem;
+  font-weight: 600;
+  padding: .15rem .4rem;
+  width: 5.5rem;
+}
+
+.stats select { width: 4.5rem; }
+.stats input:focus, .stats select:focus { outline: none; border-color: var(--accent); }
 
 .chord-grid {
   display: grid;
