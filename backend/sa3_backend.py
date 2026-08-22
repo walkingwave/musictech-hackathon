@@ -20,6 +20,9 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -87,46 +90,59 @@ class MockBackend:
 
 
 class LocalBackend:
-    """stable-audio-3 running in-process.
+    """Stability's MLX build, running on Apple Silicon.
 
-    The model is loaded lazily and cached on the instance: loading takes
-    long enough that we do not want it blocking server startup, but we
-    also do not want to reload it on every generation.
+    Invoked as a subprocess rather than imported: the MLX stack ships as
+    its own checkout with its own virtualenv, and shelling out keeps its
+    dependency tree (mlx, its own numpy pin) completely separate from
+    ours. The cost is a process launch per generation, which is small
+    next to sampling time.
     """
 
     id = "local"
-    label = f"Local — {config.LOCAL_MODEL}"
-    note = "free, offline, lower fidelity"
-
-    def __init__(self) -> None:
-        self._model = None
+    label = f"Local — {config.MLX_DIT} (MLX)"
+    note = "free, offline, no account needed"
 
     def available(self) -> bool:
-        try:
-            import stable_audio_3  # noqa: F401
-        except ImportError:
-            return False
-        return True
-
-    def _load(self):
-        if self._model is None:
-            from stable_audio_3 import StableAudioModel
-
-            log.info("loading %s (first call only)", config.LOCAL_MODEL)
-            self._model = StableAudioModel.from_pretrained(config.LOCAL_MODEL)
-        return self._model
+        return (config.MLX_ROOT / "sa3").is_file() and (
+            config.MLX_ROOT / ".venv" / "bin" / "python"
+        ).is_file()
 
     def generate(self, prompt, init_audio, noise, duration, seed):
-        model = self._load()
-        audio = model.generate(
-            prompt=prompt,
-            init_audio=(_to_stereo_tensor(init_audio), config.SAMPLE_RATE),
-            init_noise_level=noise,
-            duration=duration,
-            steps=config.DEFAULT_STEPS,
-            seed=seed,
-        )
-        return _to_mono_numpy(audio)
+        with tempfile.TemporaryDirectory() as workdir:
+            guide_path = Path(workdir) / "guide.wav"
+            out_path = Path(workdir) / "out.wav"
+
+            # The MLX CLI wants 44.1kHz 16-bit PCM specifically.
+            sf.write(guide_path, init_audio, config.SAMPLE_RATE, subtype="PCM_16")
+
+            command = [
+                str(config.MLX_ROOT / ".venv" / "bin" / "python"),
+                str(config.MLX_ROOT / "scripts" / "sa3_mlx.py"),
+                "--prompt", prompt,
+                "--init-audio", str(guide_path),
+                "--init-noise-level", str(noise),
+                "--dit", config.MLX_DIT,
+                "--decoder", config.MLX_DECODERS[config.MLX_DIT],
+                "--seconds", str(int(round(duration))),
+                "--steps", str(config.DEFAULT_STEPS),
+                "--seed", str(seed),
+                "--out", str(out_path),
+            ]
+
+            log.info("mlx: %s dit=%s noise=%.2f", prompt[:60], config.MLX_DIT, noise)
+            result = subprocess.run(
+                command, cwd=config.MLX_ROOT, capture_output=True, text=True, timeout=900
+            )
+
+            if result.returncode != 0 or not out_path.exists():
+                # Surface the last line of stderr rather than the whole
+                # progress-bar dump, which is mostly carriage returns.
+                detail = (result.stderr or result.stdout).strip().splitlines()
+                raise RuntimeError(f"sa3_mlx failed: {detail[-1] if detail else 'no output'}")
+
+            audio, _ = sf.read(out_path, dtype="float32")
+            return _to_mono_numpy(audio)
 
 
 # --- api ----------------------------------------------------------------
@@ -252,18 +268,8 @@ def _cache_key(prompt: str, init_audio: np.ndarray, noise: float, duration: floa
     return digest.hexdigest()
 
 
-def _to_stereo_tensor(mono: np.ndarray):
-    """Mono numpy -> the (2, samples) torch tensor the local model expects."""
-    import torch
-
-    tensor = torch.from_numpy(np.ascontiguousarray(mono, dtype=np.float32))
-    return tensor.unsqueeze(0).repeat(2, 1)
-
-
 def _to_mono_numpy(audio) -> np.ndarray:
     """Whatever a backend returned -> mono float32 numpy."""
-    if hasattr(audio, "detach"):  # torch tensor
-        audio = audio.detach().cpu().numpy()
     audio = np.asarray(audio, dtype=np.float32)
 
     if audio.ndim == 1:

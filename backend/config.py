@@ -37,11 +37,31 @@ DEFAULT_STEPS = 8
 DEFAULT_BACKEND = os.environ.get("BTG_DEFAULT_BACKEND", "mock")
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
-# Local model variant. `small-music` is the only one that runs on Apple
-# Silicon; `medium` needs CUDA + Flash Attention 2.
-LOCAL_MODEL = os.environ.get("BTG_LOCAL_MODEL", "small-music")
-
 STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-3/audio-to-audio"
+
+# --- local MLX backend -------------------------------------------------
+
+# Stability's Apple Silicon build, installed separately as a sibling
+# checkout with its own venv. Weights come from the *ungated*
+# `stabilityai/stable-audio-3-optimized` repo, so this path needs no
+# HuggingFace account - unlike the PyTorch `stable-audio-3-small-music`
+# weights, which are gated behind licence approval.
+#
+# Install:
+#   git clone --depth=1 https://github.com/Stability-AI/stable-audio-3
+#   cd stable-audio-3/optimized/mlx && ./install.sh -y
+MLX_ROOT = Path(
+    os.environ.get(
+        "BTG_MLX_ROOT",
+        REPO_ROOT.parent / "sa3-mlx-src" / "optimized" / "mlx",
+    )
+)
+
+# Which DiT to run. `medium` (1.4B) fits comfortably on 16GB of unified
+# memory and sounds better; `sm-music` (0.6B) is faster for sweeping
+# parameters. Each DiT pairs with a specific decoder.
+MLX_DIT = os.environ.get("BTG_MLX_DIT", "medium")
+MLX_DECODERS = {"sm-music": "same-s", "sm-sfx": "same-s", "medium": "same-l"}
 
 
 def ensure_dirs() -> None:
