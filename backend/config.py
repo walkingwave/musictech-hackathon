@@ -43,6 +43,20 @@ SAMPLE_RATE = 44100
 DEFAULT_NOISE = 0.8
 MIN_USEFUL_NOISE = 0.6
 
+# Per-part overrides. Parts differ in how much freedom they can take
+# before they stop matching the guide.
+#
+# Harmony is the fragile one: it follows the vocal's own melody, so
+# wandering off the guide is immediately audible as wrong notes. At 0.80
+# it came back with pitch classes outside the key; at 0.65 it stayed in.
+# Bass and drums tolerate more freedom because their guides constrain
+# rhythm and register more than exact pitch.
+PART_NOISE = {"harmony": 0.65}
+
+
+def default_noise(part: str) -> float:
+    return PART_NOISE.get(part, DEFAULT_NOISE)
+
 # Sampling steps. Post-trained models are tuned for very few steps.
 DEFAULT_STEPS = 8
 

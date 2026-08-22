@@ -177,6 +177,10 @@ button.solid:hover:not(:disabled) { background: #000; }
 
 .preview { width: 100%; margin-top: 0.9rem; }
 
+.pending { margin-top: 0.9rem; border: 1px solid var(--line); padding: 0.9rem; }
+.pending .preview { margin-top: 0; }
+.pending-actions { display: flex; gap: 0.6rem; margin-top: 0.8rem; }
+
 /* --- prompt ------------------------------------------------------------ */
 
 textarea {

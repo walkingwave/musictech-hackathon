@@ -6,6 +6,9 @@ export default function Recorder({ onSubmit, fileName }) {
   const recorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
   const [previewUrl, setPreviewUrl] = useState(null);
+  // A finished recording held for review — the user confirms with Use / Analyze
+  // before it is sent, or discards it to record again.
+  const [pending, setPending] = useState(null); // { blob, filename }
 
   const submit = (blob, filename) => {
     setPreviewUrl(URL.createObjectURL(blob));
@@ -24,11 +27,25 @@ export default function Recorder({ onSubmit, fileName }) {
     recorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
       setRecording(false);
-      submit(new Blob(chunks, { type: recorder.mimeType }), 'recording.webm');
+      // Hold for review rather than analyzing immediately.
+      const blob = new Blob(chunks, { type: recorder.mimeType });
+      setPreviewUrl(URL.createObjectURL(blob));
+      setPending({ blob, filename: 'recording.webm' });
     };
     recorder.start();
     recorderRef.current = recorder;
     setRecording(true);
+  };
+
+  const confirmPending = () => {
+    if (!pending) return;
+    submit(pending.blob, pending.filename);
+    setPending(null);
+  };
+
+  const discardPending = () => {
+    setPending(null);
+    setPreviewUrl(null);
   };
 
   return (
@@ -53,6 +70,20 @@ export default function Recorder({ onSubmit, fileName }) {
         </label>
       </div>
 
+      {pending && (
+        <div className="pending">
+          <audio className="preview" src={previewUrl} controls />
+          <div className="pending-actions">
+            <button type="button" className="solid" onClick={confirmPending}>
+              Use recording · Analyze
+            </button>
+            <button type="button" onClick={discardPending}>
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
+
       {fileName && (
         <div className="file-row">
           <div className="file-meta">
@@ -68,7 +99,9 @@ export default function Recorder({ onSubmit, fileName }) {
         </div>
       )}
 
-      {previewUrl && <audio className="preview" src={previewUrl} controls />}
+      {previewUrl && fileName && !pending && (
+        <audio className="preview" src={previewUrl} controls />
+      )}
     </>
   );
 }

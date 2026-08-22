@@ -8,7 +8,12 @@ import TracksView from './components/TracksView.jsx';
 export default function App() {
   const [view, setView] = useState('input');
   const [backends, setBackends] = useState([]);
-  const [backend, setBackend] = useState(() => localStorage.getItem('backend') || 'mock');
+  const [backend, setBackend] = useState(() => {
+    // Default to the local model. 'mock' was an earlier default; drop it so
+    // stale storage does not keep the app on the placeholder backend.
+    const stored = localStorage.getItem('backend');
+    return stored && stored !== 'mock' ? stored : 'local';
+  });
   const [sessionId, setSessionId] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [fileName, setFileName] = useState(null);

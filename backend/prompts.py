@@ -14,11 +14,17 @@ from __future__ import annotations
 from .models import Analysis, Part
 
 # What the instrument should sound like, before the user's own style text.
+#
+# Harmony asks for a choir pad rather than "backing vocal harmony". SA3's
+# training data (AudioSparx + Freesound) is thin on isolated vocal stems
+# and rich in pads, and measured against a correct A minor guide the vocal
+# phrasing came back with pitch classes outside the key while the choir
+# phrasing stayed in it.
 INSTRUMENT_PHRASES: dict[Part, str] = {
     "bass": "warm fingered electric bass guitar, dry DI signal, clean low end",
     "piano": "acoustic grand piano chords, close-miked, natural room",
     "drums": "tight acoustic drum kit, punchy kick and snare, dry room",
-    "harmony": "layered backing vocal harmony, smooth vowels, close-miked",
+    "harmony": "warm choir pad, sustained aahs, soft attack, close-miked",
 }
 
 # What must not appear in the stem. Everything except the target part.
@@ -26,7 +32,7 @@ ISOLATION: dict[Part, str] = {
     "bass": "solo bass only, no drums, no vocals, no piano",
     "piano": "solo piano only, no drums, no vocals, no bass",
     "drums": "drums only, no melody, no vocals, no bass",
-    "harmony": "vocals only, no instruments, no drums",
+    "harmony": "single sustained layer, no drums, no bass, no percussion",
 }
 
 

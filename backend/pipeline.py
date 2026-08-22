@@ -16,9 +16,9 @@ import random
 import numpy as np
 import soundfile as sf
 
-from . import align, arrange, prompts, render_guide, sa3_backend
+from . import align, arrange, config, prompts, render_guide, sa3_backend
 from .analysis import analyze
-from .config import DEFAULT_NOISE, SAMPLE_RATE
+from .config import SAMPLE_RATE
 from .models import Analysis, Part, StemResult
 from .session import Session
 
@@ -52,7 +52,7 @@ def generate_stem(
     session: Session,
     part: Part,
     style: str = "",
-    noise: float = DEFAULT_NOISE,
+    noise: float | None = None,
     backend: str | None = None,
     seed: int | None = None,
 ) -> StemResult:
@@ -61,10 +61,13 @@ def generate_stem(
     The guide track is what makes the output land in time and in key. It
     carries the rhythm and harmony through the model's noised latent, so
     what comes back has the right skeleton and a real instrument's timbre.
+
+    `noise` defaults per part - see config.PART_NOISE.
     """
     analysis = session.analysis
     vocal, sr = session.read_vocal()
     seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+    noise = noise if noise is not None else config.default_noise(part)
 
     # Stage 2: notes on the grid.
     midi = arrange.arrange(part, analysis, vocal, sr)
