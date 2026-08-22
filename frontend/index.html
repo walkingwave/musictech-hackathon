@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backing Track Generator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>Backing Track Generator</h1>
+  <!-- Backend selector. Populated from /api/backends so unavailable
+       options can be disabled rather than failing on click. -->
+  <div class="backend-picker">
+    <span class="label">Model</span>
+    <div id="backend-options" class="segmented"></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Step 1: get a vocal in -->
+  <section id="step-input">
+    <h2>1 · Record or upload a vocal</h2>
+    <div class="row">
+      <button id="record" class="primary">Record</button>
+      <span class="or">or</span>
+      <label class="file-button">
+        Choose file
+        <input type="file" id="upload" accept="audio/*" hidden>
+      </label>
+      <span id="record-status" class="status"></span>
+    </div>
+    <audio id="vocal-preview" controls hidden></audio>
+  </section>
+
+  <!-- Step 2: what we detected, with the chords editable -->
+  <section id="step-analysis" hidden>
+    <h2>2 · Detected structure</h2>
+    <div class="stats">
+      <div><span id="stat-bpm">—</span><small>BPM</small></div>
+      <div><span id="stat-key">—</span><small>key</small></div>
+      <div><span id="stat-bars">—</span><small>bars</small></div>
+    </div>
+    <p class="hint">
+      A solo melody fits many chord progressions, so these are a starting
+      point. Edit any chord and the next generation will use your version.
+    </p>
+    <div id="chord-grid" class="chord-grid"></div>
+    <button id="save-chords">Save chords</button>
+  </section>
+
+  <!-- Step 3: pick parts and generate -->
+  <section id="step-parts" hidden>
+    <h2>3 · Generate backing parts</h2>
+    <div id="parts"></div>
+  </section>
+
+  <!-- Step 4: play them together -->
+  <section id="step-mix" hidden>
+    <h2>4 · Mix</h2>
+    <div class="row">
+      <button id="play" class="primary">Play</button>
+      <button id="stop">Stop</button>
+      <a id="export" class="button" href="#">Download stems + MIDI</a>
+    </div>
+    <div id="tracks" class="tracks"></div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
