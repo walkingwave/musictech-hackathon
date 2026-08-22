@@ -23,6 +23,11 @@ export default function App() {
   const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
+  // Studio tempo/key — auto-populated from analysis, editable in the studio
+  // (works even with no upload, where they default and just drive the grid).
+  const [studioBpm, setStudioBpm] = useState(120);
+  const [studioKey, setStudioKey] = useState('C');
+  const [studioMode, setStudioMode] = useState('major');
 
   const engine = useTimeline();
   const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
@@ -77,6 +82,9 @@ export default function App() {
       const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
+      setStudioBpm(result.analysis.bpm);
+      setStudioKey(result.analysis.key);
+      setStudioMode(result.analysis.mode);
       setFileName(wavName);
       vocalWavRef.current = wav;
       vocalAddedRef.current = false;
@@ -186,9 +194,14 @@ export default function App() {
       ) : (
         <Studio
           engine={engine}
-          bpm={analysis?.bpm || 120}
+          bpm={studioBpm}
+          keyName={studioKey}
+          mode={studioMode}
+          detected={!!analysis}
+          onBpm={setStudioBpm}
+          onKey={setStudioKey}
+          onMode={setStudioMode}
           onGenerateStem={studioGenerate}
-          sessionReady={!!sessionId}
         />
       )}
 

@@ -451,3 +451,44 @@ input[type="range"] { accent-color: var(--ink); }
 .i-btn:hover:not(:disabled) { border-color: var(--ink); }
 .i-btn.accent { background: var(--ink); color: #fff; border-color: var(--ink); }
 .i-btn.danger:hover { border-color: var(--hot); color: var(--hot); }
+
+/* studio toolbar extras */
+.tools { display: flex; gap: 2px; }
+.tool-btn {
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em;
+  background: var(--panel); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.35rem 0.6rem;
+}
+.tool-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.snap-ctl, .studio-field {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-ink);
+}
+.snap-ctl select, .studio-field select, .studio-field input {
+  font-family: var(--mono); font-size: 0.68rem; border: 1px solid var(--line-strong); border-radius: 0;
+  background: var(--panel); color: var(--ink); padding: 0.25rem 0.4rem;
+}
+.studio-field input { width: 4.2rem; }
+.zoom-ctl { display: flex; gap: 2px; }
+.t-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.import-btn {
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.1em;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.4rem 0.7rem; cursor: pointer;
+}
+.import-btn:hover { border-color: var(--ink); }
+
+/* clip trim handles + tool cursors */
+.trim-handle { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 4; }
+.trim-handle.left { left: 0; }
+.trim-handle.right { right: 0; }
+.trim-handle:hover { background: rgba(0,0,0,0.18); }
+.clip.cut { cursor: crosshair; }
+
+/* loop band on the ruler */
+.loop-band { position: absolute; top: 0; bottom: 0; background: rgba(214,69,69,0.16); border-left: 1px solid var(--hot); border-right: 1px solid var(--hot); pointer-events: none; }
+
+.studio-empty {
+  padding: 3rem 1.5rem; text-align: center;
+  font-family: var(--mono); font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em;
+}

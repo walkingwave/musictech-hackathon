@@ -29,6 +29,12 @@ export function useTimeline() {
   const [tracks, setTracks] = useState([]);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
+  const [loop, setLoopState] = useState(null); // {a, b} timeline seconds or null
+  const loopRef = useRef(null);
+  const setLoop = useCallback((region) => {
+    loopRef.current = region;
+    setLoopState(region);
+  }, []);
 
   const context = useCallback(() => {
     if (!ctxRef.current) ctxRef.current = new (window.AudioContext || window.webkitAudioContext)();
@@ -183,6 +189,55 @@ export function useTimeline() {
     );
   }, []);
 
+  // Patch arbitrary fields of one clip (used by edge-trim: start/offset/duration).
+  const updateClip = useCallback((trackId, clipId, patch) => {
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)) }
+          : t,
+      ),
+    );
+  }, []);
+
+  // Split one clip at a timeline time into two clips sharing the same buffer.
+  const splitClip = useCallback((trackId, clipId, atTime) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const idx = t.clips.findIndex((c) => c.id === clipId);
+        if (idx < 0) return t;
+        const c = t.clips[idx];
+        if (atTime <= c.start + 0.02 || atTime >= c.start + c.duration - 0.02) return t;
+        const leftDur = atTime - c.start;
+        const rightId = uid('clip');
+        buffersRef.current[rightId] = buffersRef.current[c.id];
+        const left = { ...c, duration: leftDur };
+        const right = {
+          ...c,
+          id: rightId,
+          start: atTime,
+          offset: c.offset + leftDur,
+          duration: c.duration - leftDur,
+        };
+        return { ...t, clips: [...t.clips.slice(0, idx), left, right, ...t.clips.slice(idx + 1)] };
+      }),
+    );
+  }, []);
+
+  const duplicateClip = useCallback((trackId, clipId) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const c = t.clips.find((x) => x.id === clipId);
+        if (!c) return t;
+        const copyId = uid('clip');
+        buffersRef.current[copyId] = buffersRef.current[c.id];
+        return { ...t, clips: [...t.clips, { ...c, id: copyId, start: c.start + c.duration }] };
+      }),
+    );
+  }, []);
+
   const setTrackProp = useCallback((trackId, prop, value) => {
     setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, [prop]: value } : t)));
     // Live-apply volume/mute/solo during playback.
@@ -268,7 +323,17 @@ export function useTimeline() {
       const total = duration;
       const tick = () => {
         const pos = offsetRef.current + Math.max(0, ctx.currentTime - startAtRef.current);
+        const lp = loopRef.current;
+        // Loop back to the region start when the playhead passes its end.
+        if (lp && lp.b - lp.a > 0.05 && pos >= lp.b) {
+          play(lp.a);
+          return;
+        }
         if (pos >= total) {
+          if (lp && lp.b - lp.a > 0.05) {
+            play(lp.a);
+            return;
+          }
           stop();
           return;
         }
@@ -308,6 +373,9 @@ export function useTimeline() {
     addClip,
     addTrackWithClip,
     moveClip,
+    updateClip,
+    splitClip,
+    duplicateClip,
     removeClip,
     removeTrack,
     replaceRegion,
@@ -316,5 +384,7 @@ export function useTimeline() {
     pause,
     stop,
     seek,
+    loop,
+    setLoop,
   };
 }

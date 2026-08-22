@@ -2,17 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
 
-// Ableton-style arrangement view: dark canvas, a bar ruler, track headers on
-// the left, and colored clips laid out along a shared timeline. Clips can be
-// dragged, regenerated (whole or by section), recorded live, and exported.
+// Timeline studio (light, on-brand) with the controls a basic DAW needs:
+// grid, zoom, adjustable snap (incl. off-grid), a move / split / range tool,
+// clip trim + split + duplicate, section highlight, loop, keyboard shortcuts.
 
-const PPS = 34; // pixels per second (horizontal zoom)
 const LANE_H = 76;
 const HEADER_W = 168;
 const RULER_H = 26;
+const MIN_CLIP = 0.05;
 
-// Muted tints, on-brand with the light editorial palette — used only as a
-// small clip title strip / header accent so tracks stay distinguishable.
 const KIND_COLOR = {
   vocal: '#e6c3b3',
   bass: '#c3cae6',
@@ -28,7 +26,17 @@ const fmt = (s) => {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 };
 
-export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
+const SNAPS = [
+  { id: 'bar', label: 'Bar', div: 1 },
+  { id: 'half', label: '1/2', div: 2 },
+  { id: 'beat', label: 'Beat', div: 4 },
+  { id: '8th', label: '1/8', div: 8 },
+  { id: 'off', label: 'Off', div: 0 },
+];
+
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+export default function Studio({ engine, bpm, keyName, mode, onBpm, onKey, onMode, detected, onGenerateStem }) {
   const {
     tracks,
     playing,
@@ -38,6 +46,9 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
     getBuffer,
     addTrackWithClip,
     moveClip,
+    updateClip,
+    splitClip,
+    duplicateClip,
     removeClip,
     removeTrack,
     replaceRegion,
@@ -46,43 +57,81 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
     pause,
     stop,
     seek,
+    loop,
+    setLoop,
   } = engine;
 
   const secondsPerBar = (60 / (bpm || 120)) * 4;
-  const [selected, setSelected] = useState(null); // {trackId, clipId}
-  const [region, setRegion] = useState(null); // {clipId, a, b} timeline secs
+  const [pps, setPps] = useState(34);
+  const [tool, setTool] = useState('move');
+  const [snapId, setSnapId] = useState('bar');
+  const [selected, setSelected] = useState(null);
+  const [region, setRegion] = useState(null); // {clipId, a, b}
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
-
-  const laneW = Math.max(1200, (duration + 8) * PPS);
   const scrollRef = useRef(null);
 
-  const timeToX = (t) => t * PPS;
-  const xToTime = (x) => x / PPS;
-  const snap = (t) => Math.round(t / secondsPerBar) * secondsPerBar;
+  const snapDiv = SNAPS.find((s) => s.id === snapId)?.div ?? 1;
+  const snapSec = snapDiv > 0 ? secondsPerBar / snapDiv : 0;
+  const snap = (t) => (snapSec > 0 ? Math.round(t / snapSec) * snapSec : t);
 
-  // Seek by clicking the ruler or empty lane space.
-  const onRulerClick = (e) => {
+  const laneW = Math.max(1200, (duration + 8) * pps);
+  const timeToX = (t) => t * pps;
+  const xToTime = (x) => x / pps;
+
+  const zoom = (dir) => setPps((p) => Math.max(8, Math.min(220, dir > 0 ? p * 1.35 : p / 1.35)));
+
+  const selTrack = selected ? tracks.find((t) => t.id === selected.trackId) : null;
+  const selClip = selTrack?.clips.find((c) => c.id === selected.clipId) || null;
+
+  // --- keyboard shortcuts ------------------------------------------------
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        playing ? pause() : play();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selClip && selTrack) {
+          removeClip(selTrack.id, selClip.id);
+          setSelected(null);
+          setRegion(null);
+        }
+      } else if (e.key === 's' || e.key === 'S') {
+        if (selClip && selTrack) splitClip(selTrack.id, selClip.id, position);
+      } else if (e.key === 'd' || e.key === 'D') {
+        if (selClip && selTrack) duplicateClip(selTrack.id, selClip.id);
+      } else if (e.key === '+' || e.key === '=') {
+        zoom(1);
+      } else if (e.key === '-' || e.key === '_') {
+        zoom(-1);
+      } else if (e.key === '1') setTool('move');
+      else if (e.key === '2') setTool('split');
+      else if (e.key === '3') setTool('range');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [playing, pause, play, selClip, selTrack, removeClip, splitClip, duplicateClip, position]);
+
+  // Ctrl/Cmd + wheel to zoom around the cursor.
+  const onWheel = (e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    zoom(e.deltaY < 0 ? 1 : -1);
+  };
+
+  const onRulerDown = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left + (scrollRef.current?.scrollLeft || 0);
+    const x = e.clientX - rect.left;
     seek(xToTime(x));
   };
 
-  // Decode a generate result (audio_url) into an AudioBuffer with our ctx.
   const decodeResult = useCallback(
-    async (result) => {
-      const bytes = await (await fetch(result.audio_url)).arrayBuffer();
-      return context().decodeAudioData(bytes);
-    },
+    async (result) => context().decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer()),
     [context],
   );
 
-  const selClip = selected
-    ? tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
-    : null;
-  const selTrack = selected ? tracks.find((t) => t.id === selected.trackId) : null;
-
-  // Regenerate the whole selected clip, optionally at a new bar length.
   const regenClip = async ({ style, noise, bars }) => {
     if (!selClip || !selTrack) return;
     setBusy(true);
@@ -92,12 +141,11 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
         part: selTrack.kind,
         style,
         noise,
-        bars: bars || selClip.startBar != null ? bars : undefined,
+        bars,
         start_bar: selClip.startBar || 0,
         seed: Math.floor(Math.random() * 1e9),
       });
       const buffer = await decodeResult(result);
-      // Replace the whole clip in place (keep its start position).
       replaceRegion(selTrack.id, selClip.id, selClip.start, selClip.start + selClip.duration, buffer, {
         prompt: style,
         seed: result.seed,
@@ -114,7 +162,6 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
     setStatus('');
   };
 
-  // Regenerate only the highlighted region of the selected clip.
   const regenSection = async ({ style, noise }) => {
     if (!selClip || !selTrack || !region || region.clipId !== selClip.id) return;
     const { a, b } = region;
@@ -149,34 +196,138 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
     setStatus('');
   };
 
-  // Drop a live recording as a clip at the playhead on a new audio track.
   const onRecorded = async (blob) => {
     const buffer = await context().decodeAudioData(await blob.arrayBuffer());
     const n = tracks.filter((t) => t.kind === 'audio').length + 1;
     addTrackWithClip(`Audio ${n}`, 'audio', buffer, { start: snap(position) });
   };
 
+  // Import an audio file straight onto the timeline as a new clip.
+  const onImport = async (file) => {
+    if (!file) return;
+    try {
+      const buffer = await context().decodeAudioData(await file.arrayBuffer());
+      const name = file.name.replace(/\.[^.]+$/, '');
+      addTrackWithClip(name || 'Import', 'audio', buffer, { start: snap(position) });
+    } catch (e) {
+      setStatus(`Import failed — ${e.message}`);
+    }
+  };
+
+  // Trim a clip edge; clamp to buffer bounds and a minimum length.
+  const trimClip = (trackId, clip, side, t) => {
+    const buf = getBuffer(clip.id);
+    const bufDur = buf ? buf.duration : clip.offset + clip.duration;
+    if (side === 'left') {
+      const minStart = clip.start - clip.offset; // offset can't go below 0
+      const maxStart = clip.start + clip.duration - MIN_CLIP;
+      const newStart = Math.max(minStart, Math.min(t, maxStart));
+      const delta = newStart - clip.start;
+      updateClip(trackId, clip.id, {
+        start: newStart,
+        offset: clip.offset + delta,
+        duration: clip.duration - delta,
+      });
+    } else {
+      const maxEnd = clip.start + (bufDur - clip.offset);
+      const newEnd = Math.max(clip.start + MIN_CLIP, Math.min(t, maxEnd));
+      updateClip(trackId, clip.id, { duration: newEnd - clip.start });
+    }
+  };
+
+  const loopActive = !!loop;
+  const toggleLoop = () => {
+    if (loopActive) setLoop(null);
+    else if (region) setLoop({ a: region.a, b: region.b });
+  };
+
   return (
     <div className="studio">
       <div className="studio-bar">
         <div className="transport">
-          <button className="t-btn" onClick={playing ? pause : () => play()}>
+          <button className="t-btn" onClick={playing ? pause : () => play()} title="Space">
             {playing ? '❚❚' : '▶'}
           </button>
           <button className="t-btn" onClick={stop}>
             ■
+          </button>
+          <button className={`t-btn${loopActive ? ' on' : ''}`} onClick={toggleLoop} disabled={!region && !loopActive} title="Loop selected range">
+            ⟳
           </button>
           <span className="t-time">
             {fmt(position)} / {fmt(duration)}
           </span>
           <span className="t-bpm">{Math.round(bpm)} BPM</span>
         </div>
+
+        <div className="tools">
+          {['move', 'split', 'range'].map((tl, i) => (
+            <button
+              key={tl}
+              className={`tool-btn${tool === tl ? ' on' : ''}`}
+              onClick={() => setTool(tl)}
+              title={`${tl} (${i + 1})`}
+            >
+              {tl}
+            </button>
+          ))}
+        </div>
+
+        <label className="snap-ctl">
+          snap
+          <select value={snapId} onChange={(e) => setSnapId(e.target.value)}>
+            {SNAPS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="zoom-ctl">
+          <button className="t-btn" onClick={() => zoom(-1)}>
+            −
+          </button>
+          <button className="t-btn" onClick={() => zoom(1)}>
+            +
+          </button>
+        </div>
+
+        <label className="studio-field" title={detected ? 'auto-detected' : ''}>
+          bpm
+          <input
+            type="number"
+            min="20"
+            max="300"
+            step="0.1"
+            value={Math.round((bpm || 120) * 10) / 10}
+            onChange={(e) => onBpm(Number(e.target.value))}
+          />
+        </label>
+        <label className="studio-field">
+          key
+          <select value={keyName || 'C'} onChange={(e) => onKey(e.target.value)}>
+            {NOTE_NAMES.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <select value={mode || 'major'} onChange={(e) => onMode(e.target.value)}>
+            <option value="major">maj</option>
+            <option value="minor">min</option>
+          </select>
+        </label>
+
         <StudioRecorder onRecorded={onRecorded} />
+        <label className="import-btn">
+          Import
+          <input type="file" accept="audio/*" hidden onChange={(e) => onImport(e.target.files[0])} />
+        </label>
         <div className="studio-status">{status}</div>
       </div>
 
       <div className="arrangement">
-        {/* left: track headers. right: scrollable lanes + ruler */}
         <div className="headers" style={{ width: HEADER_W }}>
           <div className="corner" style={{ height: RULER_H }} />
           {tracks.map((t) => (
@@ -191,51 +342,48 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
           {tracks.length === 0 && <div className="empty-h">no tracks</div>}
         </div>
 
-        <div className="lanes-scroll" ref={scrollRef}>
+        {tracks.length === 0 && (
+          <div className="studio-empty">
+            Empty timeline — Import an audio file, Record a clip, or generate
+            backing from the Input view.
+          </div>
+        )}
+
+        <div className="lanes-scroll" ref={scrollRef} onWheel={onWheel}>
           <div style={{ width: laneW }}>
             <Ruler
               width={laneW}
               height={RULER_H}
               secondsPerBar={secondsPerBar}
-              pps={PPS}
-              onClick={onRulerClick}
+              pps={pps}
+              loop={loop}
+              onDown={onRulerDown}
             />
             <div className="lanes" style={{ position: 'relative' }}>
               {tracks.map((t) => (
-                <div
-                  className="lane"
+                <Lane
                   key={t.id}
-                  style={{ height: LANE_H }}
-                  onMouseDown={(e) => {
-                    // click empty lane to seek
-                    if (e.target.classList.contains('lane')) {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      seek(xToTime(e.clientX - rect.left));
-                    }
+                  track={t}
+                  height={LANE_H}
+                  pps={pps}
+                  secondsPerBar={secondsPerBar}
+                  snapDiv={snapDiv}
+                  tool={tool}
+                  snapSec={snapSec}
+                  selectedClipId={selected?.clipId}
+                  region={region}
+                  getBuffer={getBuffer}
+                  onSeek={(x) => seek(xToTime(x))}
+                  onSelect={(clipId) => {
+                    setSelected({ trackId: t.id, clipId });
+                    setRegion(null);
                   }}
-                >
-                  {t.clips.map((c) => (
-                    <ClipView
-                      key={c.id}
-                      clip={c}
-                      buffer={getBuffer(c.id)}
-                      color={colorFor(t.kind)}
-                      pps={PPS}
-                      height={LANE_H}
-                      selected={selected?.clipId === c.id}
-                      region={region?.clipId === c.id ? region : null}
-                      secondsPerBar={secondsPerBar}
-                      onSelect={() => {
-                        setSelected({ trackId: t.id, clipId: c.id });
-                        setRegion(null);
-                      }}
-                      onMove={(newStart) => moveClip(t.id, c.id, snap(newStart))}
-                      onRegion={(a, b) => setRegion({ clipId: c.id, a, b })}
-                    />
-                  ))}
-                </div>
+                  onMove={(clipId, s) => moveClip(t.id, clipId, s)}
+                  onTrim={(clip, side, tt) => trimClip(t.id, clip, side, tt)}
+                  onSplit={(clipId, at) => splitClip(t.id, clipId, at)}
+                  onRange={(clipId, a, b) => setRegion({ clipId, a, b })}
+                />
               ))}
-              {/* playhead spanning all lanes */}
               <div
                 className="playhead-line"
                 style={{ left: timeToX(position), height: tracks.length * LANE_H }}
@@ -255,6 +403,8 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
           buffer={getBuffer(selClip.id)}
           onRegenClip={regenClip}
           onRegenSection={regenSection}
+          onSplit={() => splitClip(selTrack.id, selClip.id, position)}
+          onDuplicate={() => duplicateClip(selTrack.id, selClip.id)}
           onDelete={() => {
             removeClip(selTrack.id, selClip.id);
             setSelected(null);
@@ -266,7 +416,65 @@ export default function Studio({ engine, bpm, onGenerateStem, sessionReady }) {
   );
 }
 
-function Ruler({ width, height, secondsPerBar, pps, onClick }) {
+function Lane({
+  track,
+  height,
+  pps,
+  secondsPerBar,
+  snapDiv,
+  tool,
+  snapSec,
+  selectedClipId,
+  region,
+  getBuffer,
+  onSeek,
+  onSelect,
+  onMove,
+  onTrim,
+  onSplit,
+  onRange,
+}) {
+  const barPx = secondsPerBar * pps;
+  const beatPx = barPx / (snapDiv >= 4 ? snapDiv : 4);
+  // Grid: strong bar lines + lighter beat lines, drawn as a background.
+  const grid = {
+    backgroundImage: `repeating-linear-gradient(90deg, var(--line-strong) 0 1px, transparent 1px ${barPx}px), repeating-linear-gradient(90deg, rgba(0,0,0,0.06) 0 1px, transparent 1px ${beatPx}px)`,
+  };
+  return (
+    <div
+      className="lane"
+      style={{ height, ...grid }}
+      onMouseDown={(e) => {
+        if (e.target.classList.contains('lane')) {
+          const rect = e.currentTarget.getBoundingClientRect();
+          onSeek(e.clientX - rect.left);
+        }
+      }}
+    >
+      {track.clips.map((c) => (
+        <ClipView
+          key={c.id}
+          clip={c}
+          buffer={getBuffer(c.id)}
+          color={KIND_COLOR[track.kind] || '#c4d4d6'}
+          pps={pps}
+          height={height}
+          tool={tool}
+          snapSec={snapSec}
+          selected={selectedClipId === c.id}
+          region={region?.clipId === c.id ? region : null}
+          onSelect={() => onSelect(c.id)}
+          onMove={(s) => onMove(c.id, s)}
+          onTrim={(side, tt) => onTrim(c, side, tt)}
+          onSplit={(at) => onSplit(c.id, at)}
+          onRange={(a, b) => onRange(c.id, a, b)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Ruler({ width, height, secondsPerBar, pps, loop, onDown }) {
   const bars = Math.ceil(width / (secondsPerBar * pps));
   const marks = [];
   for (let i = 0; i <= bars; i++) {
@@ -278,8 +486,14 @@ function Ruler({ width, height, secondsPerBar, pps, onClick }) {
     );
   }
   return (
-    <div className="ruler" style={{ width, height }} onMouseDown={onClick}>
+    <div className="ruler" style={{ width, height }} onMouseDown={onDown}>
       {marks}
+      {loop && (
+        <div
+          className="loop-band"
+          style={{ left: loop.a * pps, width: (loop.b - loop.a) * pps }}
+        />
+      )}
     </div>
   );
 }
@@ -287,7 +501,7 @@ function Ruler({ width, height, secondsPerBar, pps, onClick }) {
 function TrackHeader({ track, height, onProp, onRemove }) {
   return (
     <div className="track-header" style={{ height }}>
-      <span className="th-color" style={{ background: KIND_COLOR[track.kind] || '#4bb3c4' }} />
+      <span className="th-color" style={{ background: KIND_COLOR[track.kind] || '#c4d4d6' }} />
       <div className="th-body">
         <div className="th-top">
           <span className="th-name">{track.name}</span>
@@ -296,16 +510,10 @@ function TrackHeader({ track, height, onProp, onRemove }) {
           </button>
         </div>
         <div className="th-controls">
-          <button
-            className={`th-btn${track.muted ? ' on' : ''}`}
-            onClick={() => onProp('muted', !track.muted)}
-          >
+          <button className={`th-btn${track.muted ? ' on' : ''}`} onClick={() => onProp('muted', !track.muted)}>
             M
           </button>
-          <button
-            className={`th-btn solo${track.soloed ? ' on' : ''}`}
-            onClick={() => onProp('soloed', !track.soloed)}
-          >
+          <button className={`th-btn solo${track.soloed ? ' on' : ''}`} onClick={() => onProp('soloed', !track.soloed)}>
             S
           </button>
           <input
@@ -332,10 +540,12 @@ function ClipInspector({
   buffer,
   onRegenClip,
   onRegenSection,
+  onSplit,
+  onDuplicate,
   onDelete,
 }) {
   const [prompt, setPrompt] = useState(clip.prompt || '');
-  const [noise, setNoise] = useState(clip.noise ?? 0.8);
+  const [noise, setNoise] = useState(0.8);
   const [bars, setBars] = useState(Math.max(1, Math.round(clip.duration / secondsPerBar)));
 
   useEffect(() => {
@@ -356,20 +566,18 @@ function ClipInspector({
       URL.revokeObjectURL(url);
     });
   };
-  const regionBars = region
-    ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar))
-    : 0;
+  const regionBars = region ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar)) : 0;
 
   return (
     <div className="inspector">
       <div className="insp-title">
-        <span className="dot" style={{ background: KIND_COLOR[track.kind] || '#4bb3c4' }} />
+        <span className="dot" style={{ background: KIND_COLOR[track.kind] || '#c4d4d6' }} />
         {track.name}
         {clip.seed != null && <span className="insp-meta">seed {clip.seed}</span>}
         {clip.backendUsed && <span className="insp-meta">{clip.backendUsed}</span>}
       </div>
 
-      {isPart ? (
+      {isPart && (
         <div className="insp-row">
           <input
             className="insp-prompt"
@@ -391,23 +599,25 @@ function ClipInspector({
           <button
             className="i-btn accent"
             disabled={busy || !region}
-            title={region ? `bars ${regionBars}` : 'alt+drag on the clip to select a section'}
+            title={region ? `bars ${regionBars}` : 'range tool: drag on the clip to select a section'}
             onClick={() => onRegenSection({ style: prompt, noise })}
           >
-            {region ? `Regen section (${regionBars} bar${regionBars > 1 ? 's' : ''})` : 'Regen section'}
+            {region ? `Regen section (${regionBars})` : 'Regen section'}
           </button>
-        </div>
-      ) : (
-        <div className="insp-row">
-          <span className="insp-note">Recorded audio · drag on the timeline to place it.</span>
         </div>
       )}
 
       <div className="insp-row">
+        <button className="i-btn" onClick={onSplit} title="S">
+          Split at playhead
+        </button>
+        <button className="i-btn" onClick={onDuplicate} title="D">
+          Duplicate
+        </button>
         <button className="i-btn" onClick={download}>
           Download WAV
         </button>
-        <button className="i-btn danger" onClick={onDelete}>
+        <button className="i-btn danger" onClick={onDelete} title="Delete/Backspace">
           Delete clip
         </button>
       </div>
