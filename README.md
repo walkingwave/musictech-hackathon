@@ -87,6 +87,23 @@ uv run btg --input samples/fixtures/amin_100.wav --part bass --sweep 0.5,0.65,0.
 the single most important knob, and the right value has to be found by ear.
 Output lands in `sessions/<id>/`.
 
+### Validate input analysis
+
+Use the analysis-only command to inspect the signal before guide generation or
+Stable Audio 3. It writes a cleaned 44.1 kHz mono WAV and metadata containing
+BPM, key, downbeat, chords, melody notes, and MIDI pitches:
+
+```bash
+uv run analysis-test --input samples/fixtures/amin_100.wav
+uv run analysis-test --input samples/fixtures/amin_100.wav --output analysis-tests/amin-check
+uv run analysis-test --input samples/beatbox.wav --mode beatbox
+```
+
+The default output directory is `analysis-tests/<run-id>/`. The preprocessing
+is deliberately conservative: it removes DC, trims only outer silence, applies
+a content-aware high-pass filter, and normalizes with headroom. Use
+`--no-trim` or `--no-high-pass` when comparing their effect on analysis.
+
 ## Layout
 
 ```
