@@ -16,15 +16,15 @@ from .models import Analysis, Part
 # What the instrument should sound like, before the user's own style text.
 INSTRUMENT_PHRASES: dict[Part, str] = {
     "bass": "warm fingered electric bass guitar, dry DI signal, clean low end",
-    "piano": "acoustic grand piano chords, close-miked, natural room",
+    "chords": "acoustic grand piano chords, close-miked, natural room",
     "drums": "tight acoustic drum kit, punchy kick and snare, dry room",
     "harmony": "layered backing vocal harmony, smooth vowels, close-miked",
 }
 
 # What must not appear in the stem. Everything except the target part.
 ISOLATION: dict[Part, str] = {
-    "bass": "solo bass only, no drums, no vocals, no piano",
-    "piano": "solo piano only, no drums, no vocals, no bass",
+    "bass": "solo bass only, no drums, no vocals, no chords",
+    "chords": "solo chord instrument only, no drums, no vocals, no bass",
     "drums": "drums only, no melody, no vocals, no bass",
     "harmony": "vocals only, no instruments, no drums",
 }

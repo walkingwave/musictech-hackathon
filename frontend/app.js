@@ -10,13 +10,15 @@
  * refresh, which matters more than architecture at hackathon pace.
  */
 
-const PARTS = ['bass', 'piano', 'drums', 'harmony'];
+const PARTS = ['bass', 'chords', 'drums', 'harmony'];
+const REFERENCE_PARTS = ['bass', 'chords', 'drums'];
 
 const state = {
   sessionId: null,
   analysis: null,
   backend: localStorage.getItem('backend') || 'mock',
   stems: {},        // part -> { audio_url, backend_used, seed }
+  references: {},   // part -> true when an optional reference is uploaded
   buffers: {},      // part | 'vocal' -> decoded AudioBuffer
   gains: {},        // part | 'vocal' -> GainNode
   volumes: {},      // part | 'vocal' -> 0..1.5
@@ -132,7 +134,7 @@ async function submitVocal(blob, filename) {
     setStatus('');
     renderAnalysis();
     renderParts();
-    show('step-analysis', 'step-parts', 'step-mix');
+  show('step-analysis', 'step-parts', 'step-mix');
     document.getElementById('export').href = `/api/session/${state.sessionId}/export`;
     loadBuffer('vocal', `/api/session/${state.sessionId}/vocal.wav`);
   } catch (error) {
@@ -214,10 +216,19 @@ function renderParts() {
   container.innerHTML = '';
 
   PARTS.forEach((part) => {
+    const acceptsReference = REFERENCE_PARTS.includes(part);
     const row = document.createElement('div');
     row.className = 'part-row';
     row.innerHTML = `
       <span class="part-name">${part}</span>
+      <label class="reference ${acceptsReference ? '' : 'disabled'}">
+        ${acceptsReference ? 'Add reference' : 'Anchor vocal'}
+        <input type="file" accept="audio/*" ${acceptsReference ? '' : 'disabled'} hidden>
+      </label>
+      <select class="guide-source" ${acceptsReference ? '' : 'disabled'}>
+        <option value="auto">auto guide</option>
+        <option value="reference">reference guide</option>
+      </select>
       <input class="style" placeholder="style, e.g. bossa nova, gritty funk">
       <label class="noise">
         divergence <output>0.80</output>
@@ -229,19 +240,52 @@ function renderParts() {
 
     const noiseSlider = row.querySelector('input[type=range]');
     const noiseOutput = row.querySelector('output');
+    const referenceInput = row.querySelector('.reference input');
+    const sourceSelect = row.querySelector('.guide-source');
     noiseSlider.oninput = () => { noiseOutput.textContent = Number(noiseSlider.value).toFixed(2); };
+
+    if (acceptsReference) {
+      referenceInput.onchange = () => uploadReference(part, row, referenceInput.files[0]);
+    } else {
+      sourceSelect.value = 'auto';
+    }
 
     row.querySelector('.generate').onclick = () =>
       generatePart(part, row, {
         style: row.querySelector('.style').value,
         noise: Number(noiseSlider.value),
+        guideSource: sourceSelect.value,
       });
 
     container.appendChild(row);
   });
 }
 
-async function generatePart(part, row, { style, noise }) {
+async function uploadReference(part, row, file) {
+  if (!file) return;
+
+  const badge = row.querySelector('.badge');
+  badge.textContent = 'uploading';
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+
+  try {
+    await api(`/session/${state.sessionId}/reference/${part}`, {
+      method: 'POST',
+      body: form,
+    });
+    state.references[part] = true;
+    row.querySelector('.guide-source').value = 'reference';
+    badge.textContent = 'reference';
+    toast(`${part} reference uploaded — timing will snap to the harmony grid`);
+  } catch (error) {
+    badge.textContent = '';
+    toast(`${part} reference failed — ${error.message}`);
+  }
+}
+
+async function generatePart(part, row, { style, noise, guideSource }) {
   const button = row.querySelector('.generate');
   const badge = row.querySelector('.badge');
 
@@ -255,13 +299,14 @@ async function generatePart(part, row, { style, noise }) {
       style,
       noise,
       backend: state.backend,
+      guide_source: guideSource,
     });
 
     state.stems[part] = result;
 
     // The server may have fallen back to a different backend than we asked
     // for. Show what actually ran, and say so if it differs.
-    badge.textContent = result.backend_used;
+    badge.textContent = `${result.guide_source} · ${result.backend_used}`;
     if (result.backend_used !== state.backend) {
       toast(`${state.backend} unavailable — generated with ${result.backend_used}`);
     }

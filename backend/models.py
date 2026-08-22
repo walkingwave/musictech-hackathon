@@ -12,8 +12,11 @@ from typing import Literal
 
 # The four backing parts we generate. Adding a part means: add it here,
 # add an arranger in arrange.py, and add a prompt template in prompts.py.
-Part = Literal["bass", "piano", "drums", "harmony"]
-PARTS: tuple[Part, ...] = ("bass", "piano", "drums", "harmony")
+Part = Literal["bass", "chords", "drums", "harmony"]
+PARTS: tuple[Part, ...] = ("bass", "chords", "drums", "harmony")
+ReferencePart = Literal["bass", "chords", "drums"]
+REFERENCE_PARTS: tuple[ReferencePart, ...] = ("bass", "chords", "drums")
+GuideSource = Literal["auto", "reference"]
 
 
 @dataclass
@@ -89,6 +92,7 @@ class StemResult:
     wav_path: str
     midi_path: str
     backend_used: str  # may differ from the request, if fallback fired
+    guide_source: GuideSource
     prompt: str
     noise: float
     seed: int

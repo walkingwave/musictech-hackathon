@@ -128,7 +128,7 @@ button.recording { background: var(--hot); border-color: var(--hot); color: #fff
 
 .part-row {
   display: grid;
-  grid-template-columns: 5rem 1fr auto auto 4rem;
+  grid-template-columns: 5rem auto auto 1fr auto auto 6rem;
   align-items: center;
   gap: .75rem;
   padding: .6rem 0;
@@ -138,7 +138,8 @@ button.recording { background: var(--hot); border-color: var(--hot); color: #fff
 .part-row:last-child { border-bottom: none; }
 .part-name { text-transform: capitalize; font-weight: 600; font-size: .9rem; }
 
-.part-row .style {
+.part-row .style,
+.part-row .guide-source {
   background: #22242f;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -148,7 +149,23 @@ button.recording { background: var(--hot); border-color: var(--hot); color: #fff
   font-size: .85rem;
 }
 
-.part-row .style:focus { outline: none; border-color: var(--accent); }
+.part-row .style:focus,
+.part-row .guide-source:focus { outline: none; border-color: var(--accent); }
+
+.reference {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .4rem .6rem;
+  color: var(--text);
+  font-size: .8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reference.disabled {
+  color: var(--dim);
+  cursor: default;
+}
 
 .noise { display: flex; align-items: center; gap: .4rem; color: var(--dim); font-size: .75rem; }
 .noise input { width: 90px; }

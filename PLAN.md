@@ -6,11 +6,11 @@ Music Tech Hackathon Montreal, Aug 22–23 2026 · Stability AI track
 
 Hackathon is **live now** (PHI, Montreal). Stability AI track brief: "build a community-facing project for musicians using Stable Audio 3." Prize $500/participant, up to $2,000/team. Winner presents at MUTEK.
 
-**Goal:** user records or uploads a vocal melody; the app generates individual backing stems the user selects — bassline, piano chords, drums, vocal harmony — each locked to the original's tempo, key and harmony. Stems export to a DAW.
+**Goal:** user records or uploads a required harmony/lead vocal, optionally adds separate references for bass, drums, and chords, and the app generates individual backing stems — bassline, chord instrument, drums, vocal harmony — each locked to the anchor vocal's tempo, key and harmony. Stems export to a DAW.
 
 **Core technical problem.** SA3 has no melody or chord conditioning and no multi-stem output. Its three modes are text-to-audio, audio-to-audio (`init_audio` + `init_noise_level` locally, `strength` via API), and inpainting with time masks. Feeding the vocal directly as `init_audio` fails both ways — low noise leaves the vocal audible in the output, high noise destroys the timing — and the result is a mix, not an isolated stem.
 
-**Solution: guide-track conditioning.** Condition on a *synthetic guide*, not on the vocal. Analyze the vocal for BPM, key and per-bar chords; synthesize a crude but structurally correct guide for the requested part; use that as `init_audio`. The rhythm and harmony live in the noised latent, so SA3 preserves the skeleton and rewrites the timbre. The output is already in time and in key, and contains only the target instrument.
+**Solution: guide-track conditioning.** Condition on a *part guide*, not directly on the vocal. The required harmony/lead vocal defines the session grid. Bass, drums, and chords either use uploaded reference audio mapped onto that grid or fall back to crude but structurally correct auto-guides. Use the guide as `init_audio`. The rhythm and harmony live in the noised latent, so SA3 preserves the skeleton and rewrites the timbre. The output is already in time and in key, and contains only the target instrument.
 
 Repo is greenfield — one README, no code. First task is committing this plan as `PLAN.md`.
 
@@ -32,9 +32,9 @@ Cost note: Stable Audio 2.5 bills 20 credits = $0.20 per generation, **flat rega
 ## Pipeline
 
 ```
-vocal.wav
+anchor vocal.wav
   1. ANALYZE       BPM, downbeat offset, key, per-bar chords
-  2. ARRANGE       chord/beat grid -> MIDI for the requested part
+  2. ARRANGE       chord/beat grid or uploaded reference -> MIDI for the requested part
   3. RENDER GUIDE  numpy synth -> guide.wav (in time, in key, deliberately ugly)
   4. SA3           audio-to-audio, init_audio=guide, noise ~0.8,
                    prompt = instrument + user style + BPM + key
@@ -83,7 +83,7 @@ Returns:
 
 Chord grid → `pretty_midi.PrettyMIDI`, one function per part:
 - **bass** — chord roots, octave 2, root–fifth pattern on the beat
-- **piano** — triad voicings, octave 4, hits on beats 1 and 3
+- **chords** — triad voicings, octave 4, hits on beats 1 and 3
 - **harmony** — `librosa.pyin` f0 on the vocal → quantized note events → transposed a diatonic third up within the detected key
 - **drums** — kick/snare/hat on the beat grid, GM drum channel
 
@@ -169,7 +169,7 @@ Single page, vanilla JS, WaveSurfer.js for waveforms, Web Audio API for synchron
 - **M0 (1h) — hard gate.** Install `uv`; `uv sync`; download `stable-audio-3-small-music`; generate one clip on the M5. Commit `PLAN.md`. If local inference fails here, pivot to API-only immediately rather than burning hours on it.
 - **M1 (3h) — prove the thesis.** analysis + bass arranger + numpy synth + one audio-to-audio call, written to wav via `cli.py`. Listen. Sweep `noise` across 0.5 / 0.65 / 0.8 / 0.9 locally and pick. **Also probe the API here** — confirming the `large` request shape early de-risks the entire final render. *Fallback if the guide mechanism doesn't hold tempo:* text-to-audio with BPM and key in the prompt plus hard alignment in M2 — worse lock, still shippable.
 - **M2 (2h)** — `align.py`. Verify the bass sits on the grid against the vocal.
-- **M3 (3h)** — piano, then drums, then harmony arrangers. Ship in that order: bass and piano are the safe core, harmony is the wow factor, drums carry the most audible alignment risk. Cut from the end if time runs short.
+- **M3 (3h)** — chords, then drums, then harmony arrangers. Ship in that order: bass and chords are the safe core, harmony is the wow factor, drums carry the most audible alignment risk. Cut from the end if time runs short.
 - **M4 (4h)** — FastAPI + web UI multitrack player + backend selector.
 - **M5 (2h)** — chord editing, export zip + MIDI, visual polish.
 - **M6 (2h)** — final renders on `large`, **pre-cache a complete demo session to disk** so the stage demo survives dead venue wifi.

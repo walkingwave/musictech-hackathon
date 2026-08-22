@@ -2,9 +2,10 @@
 
 Project Track: Stable Audio
 
-Record a vocal melody, get individual backing stems — bassline, piano chords, drums,
-vocal harmony — each locked to the original's tempo, key and harmony. Export the
-stems and MIDI to a DAW.
+Record a harmony/lead vocal, optionally add separate references for bass, chords,
+and drums, then get individual backing stems — bassline, chord instrument, drums,
+and vocal harmony — each locked to the original's tempo, key and harmony. Export
+the stems and MIDI to a DAW.
 
 See [PLAN.md](PLAN.md) for the full design and rationale.
 
@@ -16,7 +17,7 @@ just hand it the vocal and ask for a bassline. Instead we build a **guide track*
 ```
 vocal.wav
   1. ANALYZE       BPM, downbeat, key, per-bar chords            analysis.py
-  2. ARRANGE       chord grid -> MIDI for the requested part     arrange.py
+  2. ARRANGE       chord grid or reference -> requested MIDI     arrange.py
   3. RENDER GUIDE  MIDI -> rough numpy synth audio               render_guide.py
   4. GENERATE      SA3 audio-to-audio, init_audio = guide        sa3_backend.py
   5. ALIGN         time-stretch and phase-lock to the grid       align.py
@@ -25,6 +26,11 @@ vocal.wav
 The guide is deliberately ugly — its only job is to be *structurally* right. Its
 rhythm and harmony survive in the model's noised latent, so what comes back has the
 correct skeleton and a real instrument's timbre.
+
+The first vocal is the required harmony/lead anchor. Bass, drums, and chords can
+either use uploaded reference audio or fall back to deterministic auto-guides. A
+reference preserves the user's pitch/onset intent but snaps timing, offset, and
+duration to the anchor vocal's grid so the guide files stay coherent.
 
 ## Setup
 
@@ -95,7 +101,7 @@ backend/
   models.py        Analysis, Bar, StemResult. The contract between stages.
   theory.py        note names, triads, scales, diatonic transposition
   analysis.py      stage 1
-  arrange.py       stage 2 — one function per part
+  arrange.py       stage 2 — auto and reference guide MIDI per part
   render_guide.py  stage 3
   sa3_backend.py   stage 4 — mock | local | api, behind one interface
   align.py         stage 5
@@ -110,9 +116,10 @@ sessions/<id>/     vocal, guides, stems, MIDI, and a meta.json provenance record
 ### Adding a backing part
 
 1. Add the name to `PARTS` in `models.py`
-2. Write `_arrange_<name>` in `arrange.py` and register it in `ARRANGERS`
-3. Add an instrument phrase and an isolation clause in `prompts.py`
-4. Add it to `PARTS` in `frontend/app.js`
+2. If it accepts uploaded references, add it to `REFERENCE_PARTS`
+3. Write `_arrange_<name>` in `arrange.py` and register it in `ARRANGERS`
+4. Add an instrument phrase and an isolation clause in `prompts.py`
+5. Add it to `PARTS` in `frontend/app.js`
 
 ## Measuring detection accuracy
 

@@ -29,6 +29,8 @@ def main() -> int:
                         help="0-1; higher diverges further from the guide")
     parser.add_argument("--backend", choices=list(sa3_backend.BACKENDS),
                         help=f"default: {config.DEFAULT_BACKEND}")
+    parser.add_argument("--guide-source", choices=("auto", "reference"),
+                        help="default: reference if uploaded for the part, otherwise auto")
     parser.add_argument("--seed", type=int, help="fixed seed, for reproducible output")
     parser.add_argument("--sweep", help="comma-separated noise values to compare")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -55,7 +57,7 @@ def main() -> int:
         for noise in noise_values:
             result = pipeline.generate_stem(
                 session, part, style=args.style, noise=noise,
-                backend=args.backend, seed=args.seed,
+                backend=args.backend, seed=args.seed, guide_source=args.guide_source,
             )
 
             # Every generation writes to stems/<part>.wav, so a sweep would
@@ -68,6 +70,7 @@ def main() -> int:
 
             print(f"\n  {part} @ noise={noise}")
             print(f"    backend: {result.backend_used}  seed: {result.seed}")
+            print(f"    guide:   {result.guide_source}")
             print(f"    audio:   {audio_path}")
 
     print(f"\nall output under {session.root}\n")

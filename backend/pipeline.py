@@ -19,7 +19,7 @@ import soundfile as sf
 from . import align, arrange, prompts, render_guide, sa3_backend
 from .analysis import analyze
 from .config import DEFAULT_NOISE, SAMPLE_RATE
-from .models import Analysis, Part, StemResult
+from .models import Analysis, GuideSource, Part, REFERENCE_PARTS, ReferencePart, StemResult
 from .session import Session
 
 log = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ def generate_stem(
     noise: float = DEFAULT_NOISE,
     backend: str | None = None,
     seed: int | None = None,
+    guide_source: GuideSource | None = None,
 ) -> StemResult:
     """Stages 2-5 for one part: arrange, render a guide, generate, align.
 
@@ -65,9 +66,16 @@ def generate_stem(
     analysis = session.analysis
     vocal, sr = session.read_vocal()
     seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+    source = _resolve_guide_source(session, part, guide_source)
 
     # Stage 2: notes on the grid.
-    midi = arrange.arrange(part, analysis, vocal, sr)
+    if source == "reference":
+        reference_part = _as_reference_part(part)
+        reference, reference_sr = session.read_reference(reference_part)
+        midi = arrange.arrange_reference(reference_part, analysis, reference, reference_sr)
+    else:
+        midi = arrange.arrange(part, analysis, vocal, sr)
+
     midi_path = session.midi_path(part)
     midi.write(str(midi_path))
 
@@ -97,12 +105,37 @@ def generate_stem(
         wav_path=str(session.stem_path(part).relative_to(session.root)),
         midi_path=str(midi_path.relative_to(session.root)),
         backend_used=backend_used,
+        guide_source=source,
         prompt=prompt,
         noise=noise,
         seed=seed,
     )
     session.save_stem(result)
     return result
+
+
+def _resolve_guide_source(
+    session: Session,
+    part: Part,
+    requested: GuideSource | None,
+) -> GuideSource:
+    if part == "harmony":
+        if requested == "reference":
+            raise ValueError("harmony uses the session vocal as its anchor guide")
+        return "auto"
+
+    reference_part = _as_reference_part(part)
+    if requested is None:
+        return "reference" if session.has_reference(reference_part) else "auto"
+    if requested == "reference" and not session.has_reference(reference_part):
+        raise ValueError(f"no reference uploaded for {part}")
+    return requested
+
+
+def _as_reference_part(part: Part) -> ReferencePart:
+    if part not in REFERENCE_PARTS:
+        raise ValueError(f"{part} does not accept reference audio")
+    return part
 
 
 def mix(session: Session, parts: list[Part], include_vocal: bool = True) -> np.ndarray:

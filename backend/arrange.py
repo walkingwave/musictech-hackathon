@@ -16,11 +16,12 @@ import numpy as np
 import pretty_midi
 
 from . import melody
-from .models import Analysis, Part
+from .analysis import analyze as analyze_reference
+from .models import Analysis, Part, ReferencePart
 from .theory import chord_to_midi, parse_chord, transpose_diatonic
 
 # General MIDI program numbers, so exported MIDI opens with sane sounds.
-GM_PROGRAMS = {"bass": 33, "piano": 0, "harmony": 52}  # finger bass, grand piano, choir aahs
+GM_PROGRAMS = {"bass": 33, "chords": 0, "harmony": 52}  # finger bass, grand piano, choir aahs
 
 # General MIDI percussion note numbers.
 DRUM_KICK, DRUM_SNARE, DRUM_HAT = 36, 38, 42
@@ -31,6 +32,24 @@ def arrange(part: Part, analysis: Analysis, vocal: np.ndarray, sr: int) -> prett
     if part not in ARRANGERS:
         raise ValueError(f"unknown part: {part}")
     return ARRANGERS[part](analysis, vocal, sr)
+
+
+def arrange_reference(
+    part: ReferencePart,
+    analysis: Analysis,
+    reference: np.ndarray,
+    sr: int,
+) -> pretty_midi.PrettyMIDI:
+    """Turn a user-recorded part reference into MIDI on the session grid.
+
+    The reference carries musical intent. Its notes/onsets are detected in
+    the reference recording, then mapped by beat position onto the anchor
+    harmony vocal's BPM/downbeat grid so every guide starts at zero and
+    shares the same duration.
+    """
+    if part == "drums":
+        return _arrange_reference_drums(analysis, reference, sr)
+    return _arrange_reference_pitched(part, analysis, reference, sr)
 
 
 def _new_midi(analysis: Analysis, part: Part) -> tuple[pretty_midi.PrettyMIDI, pretty_midi.Instrument]:
@@ -78,12 +97,12 @@ def _arrange_bass(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_midi
     return midi
 
 
-# --- piano --------------------------------------------------------------
+# --- chords -------------------------------------------------------------
 
 
-def _arrange_piano(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_midi.PrettyMIDI:
+def _arrange_chords(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_midi.PrettyMIDI:
     """Block triads on beats 1 and 3, held for two beats each."""
-    midi, instrument = _new_midi(analysis, "piano")
+    midi, instrument = _new_midi(analysis, "chords")
     beat = analysis.seconds_per_beat
 
     for bar in analysis.bars:
@@ -97,6 +116,82 @@ def _arrange_piano(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_mid
                 _add(instrument, pitch, start, end, velocity=75)
 
     return midi
+
+
+# --- reference guides ---------------------------------------------------
+
+
+def _arrange_reference_pitched(
+    part: ReferencePart,
+    analysis: Analysis,
+    reference: np.ndarray,
+    sr: int,
+) -> pretty_midi.PrettyMIDI:
+    """Preserve a hummed reference's pitch contour, quantized to the anchor grid."""
+    midi, instrument = _new_midi(analysis, part)
+    mono = librosa.to_mono(reference) if reference.ndim > 1 else reference
+    ref_analysis = analyze_reference(mono, sr)
+    quantum = analysis.seconds_per_beat / 2
+
+    for note in melody.track(mono, sr):
+        start = _map_reference_time(note.start, ref_analysis, analysis)
+        end = _map_reference_time(note.end, ref_analysis, analysis)
+        start = _quantize_time(start, quantum)
+        end = _quantize_time(end, quantum)
+
+        if end <= start:
+            end = start + quantum
+        if start >= analysis.duration:
+            continue
+
+        pitch = note.pitch
+        if part == "bass":
+            # Keep the sung note class, but place it in a bass register.
+            pitch = 36 + (note.pitch % 12)
+
+        _add(instrument, pitch, max(0.0, start), min(end, analysis.duration), velocity=90)
+
+    return midi
+
+
+def _arrange_reference_drums(
+    analysis: Analysis,
+    reference: np.ndarray,
+    sr: int,
+) -> pretty_midi.PrettyMIDI:
+    """Map beatbox/tap onsets onto the anchor grid with simple drum labels."""
+    midi, instrument = _new_midi(analysis, "drums")
+    mono = librosa.to_mono(reference) if reference.ndim > 1 else reference
+    ref_analysis = analyze_reference(mono, sr)
+    onset_env = librosa.onset.onset_strength(y=mono, sr=sr)
+    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, units="frames")
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+    quantum = analysis.seconds_per_beat / 2
+
+    for onset_time in onset_times:
+        start = _quantize_time(_map_reference_time(float(onset_time), ref_analysis, analysis), quantum)
+        if not 0 <= start < analysis.duration:
+            continue
+
+        beat_index = int(round((start - analysis.downbeat_offset_s) / analysis.seconds_per_beat)) % 4
+        pitch = DRUM_KICK if beat_index in (0, 2) else DRUM_SNARE
+        _add(instrument, pitch, start, min(start + 0.1, analysis.duration), velocity=100)
+
+        offbeat = start + analysis.seconds_per_beat / 2
+        if offbeat < analysis.duration:
+            _add(instrument, DRUM_HAT, offbeat, offbeat + 0.05, velocity=55)
+
+    return midi
+
+
+def _map_reference_time(seconds: float, reference: Analysis, anchor: Analysis) -> float:
+    """Same beat position in the reference, expressed in anchor-session seconds."""
+    beat_position = (seconds - reference.downbeat_offset_s) / reference.seconds_per_beat
+    return anchor.downbeat_offset_s + beat_position * anchor.seconds_per_beat
+
+
+def _quantize_time(seconds: float, quantum: float) -> float:
+    return round(seconds / quantum) * quantum
 
 
 # --- drums --------------------------------------------------------------
@@ -150,7 +245,7 @@ def _arrange_harmony(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_m
 
 ARRANGERS = {
     "bass": _arrange_bass,
-    "piano": _arrange_piano,
+    "chords": _arrange_chords,
     "drums": _arrange_drums,
     "harmony": _arrange_harmony,
 }

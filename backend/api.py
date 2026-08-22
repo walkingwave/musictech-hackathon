@@ -15,6 +15,8 @@ import logging
 import zipfile
 from pathlib import Path
 
+import librosa
+import soundfile as sf
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +24,7 @@ from pydantic import BaseModel
 
 from . import config, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
-from .models import PARTS
+from .models import PARTS, REFERENCE_PARTS, GuideSource
 from .session import Session
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -42,6 +44,7 @@ class GenerateRequest(BaseModel):
     noise: float = config.DEFAULT_NOISE
     backend: str | None = None
     seed: int | None = None
+    guide_source: GuideSource | None = None
 
 
 class AnalysisEdit(BaseModel):
@@ -120,6 +123,30 @@ def update_analysis(session_id: str, edit: AnalysisEdit) -> dict:
     return analysis.to_dict()
 
 
+@app.post("/api/session/{session_id}/reference/{part}")
+async def upload_reference(session_id: str, part: str, file: UploadFile) -> dict:
+    """Upload an optional bass/drums/chords reference for guide creation."""
+    if part not in REFERENCE_PARTS:
+        raise HTTPException(400, f"{part} does not accept reference audio")
+
+    session = _load(session_id)
+    upload_path = config.SESSIONS_DIR / f"upload-{part}-{file.filename}"
+    upload_path.write_bytes(await file.read())
+
+    try:
+        audio, sr = sf.read(upload_path, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        if sr != config.SAMPLE_RATE:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=config.SAMPLE_RATE)
+            sr = config.SAMPLE_RATE
+        session.save_reference(part, audio, sr)
+    finally:
+        upload_path.unlink(missing_ok=True)
+
+    return {"part": part, "guide_source": "reference"}
+
+
 @app.post("/api/generate")
 def generate(request: GenerateRequest) -> dict:
     """Generate one backing stem.
@@ -139,7 +166,10 @@ def generate(request: GenerateRequest) -> dict:
             noise=request.noise,
             backend=request.backend,
             seed=request.seed,
+            guide_source=request.guide_source,
         )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
@@ -156,8 +186,8 @@ def get_session(session_id: str) -> dict:
 
 @app.get("/api/session/{session_id}/audio/{kind}/{filename}")
 def get_audio(session_id: str, kind: str, filename: str) -> FileResponse:
-    """Serve a wav from a session. `kind` is guides or stems."""
-    if kind not in ("guides", "stems"):
+    """Serve a wav from a session. `kind` is references, guides or stems."""
+    if kind not in ("references", "guides", "stems"):
         raise HTTPException(404, "not found")
 
     session = _load(session_id)
@@ -186,7 +216,7 @@ def export(session_id: str) -> StreamingResponse:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.write(session.vocal_path, "vocal.wav")
         archive.write(session.meta_path, "meta.json")
-        for subdir in ("stems", "midi"):
+        for subdir in ("references", "stems", "midi"):
             for path in sorted((session.root / subdir).glob("*")):
                 archive.write(path, f"{subdir}/{path.name}")
 

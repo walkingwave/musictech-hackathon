@@ -8,6 +8,7 @@ reproduce any stem exactly.
     sessions/<uuid>/
       vocal.wav
       meta.json
+      references/bass.wav
       guides/bass.wav
       stems/bass.wav
       midi/bass.mid
@@ -24,7 +25,7 @@ import numpy as np
 import soundfile as sf
 
 from .config import SAMPLE_RATE, SESSIONS_DIR
-from .models import Analysis, StemResult
+from .models import Analysis, ReferencePart, StemResult
 
 
 @dataclass
@@ -41,11 +42,11 @@ class Session:
         session_id = uuid.uuid4().hex[:12]
         session = cls(id=session_id, root=SESSIONS_DIR / session_id)
 
-        for subdir in ("guides", "stems", "midi"):
+        for subdir in ("references", "guides", "stems", "midi"):
             (session.root / subdir).mkdir(parents=True, exist_ok=True)
 
         sf.write(session.vocal_path, vocal, sr)
-        session._write_meta({"id": session_id, "analysis": None, "stems": {}})
+        session._write_meta({"id": session_id, "analysis": None, "references": {}, "stems": {}})
         return session
 
     @classmethod
@@ -68,6 +69,9 @@ class Session:
     def guide_path(self, part: str) -> Path:
         return self.root / "guides" / f"{part}.wav"
 
+    def reference_path(self, part: str) -> Path:
+        return self.root / "references" / f"{part}.wav"
+
     def stem_path(self, part: str) -> Path:
         return self.root / "stems" / f"{part}.wav"
 
@@ -78,6 +82,12 @@ class Session:
 
     def read_vocal(self) -> tuple[np.ndarray, int]:
         audio, sr = sf.read(self.vocal_path, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        return audio, sr
+
+    def read_reference(self, part: ReferencePart) -> tuple[np.ndarray, int]:
+        audio, sr = sf.read(self.reference_path(part), dtype="float32")
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
         return audio, sr
@@ -105,6 +115,18 @@ class Session:
         meta = self._read_meta()
         meta["analysis"] = analysis.to_dict()
         self._write_meta(meta)
+
+    def save_reference(self, part: ReferencePart, audio: np.ndarray, sr: int) -> None:
+        self.reference_path(part).parent.mkdir(parents=True, exist_ok=True)
+        sf.write(self.reference_path(part), audio, sr)
+        meta = self._read_meta()
+        meta.setdefault("references", {})[part] = {
+            "path": str(self.reference_path(part).relative_to(self.root))
+        }
+        self._write_meta(meta)
+
+    def has_reference(self, part: ReferencePart) -> bool:
+        return self.reference_path(part).is_file()
 
     def save_stem(self, result: StemResult) -> None:
         meta = self._read_meta()
