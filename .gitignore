@@ -6,4 +6,7 @@ sessions/
 out/
 .cache/
 .DS_Store
-uv.lock
+
+# Test fixtures are regenerable:
+#   uv run python scripts/make_test_vocals.py
+samples/fixtures/

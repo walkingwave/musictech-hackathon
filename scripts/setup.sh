@@ -38,8 +38,8 @@ fi
 echo "==> python dependencies"
 uv sync
 
-echo "==> test vocal"
-uv run python scripts/make_test_vocal.py
+echo "==> test fixtures"
+uv run python scripts/make_test_vocals.py
 
 if [ ! -f .env ]; then
   cp .env.example .env
@@ -53,7 +53,7 @@ Setup complete.
   Run the app:   uv run uvicorn backend.api:app --reload
                  http://127.0.0.1:8000
 
-  Run the CLI:   uv run btg --input samples/test_vocal.wav --part bass
+  Run the CLI:   uv run btg --input samples/fixtures/amin_100.wav --part bass
 
 Both work right now on the `mock` backend — no model weights or API key needed.
 

@@ -38,17 +38,36 @@
   <!-- Step 2: what we detected, with the chords editable -->
   <section id="step-analysis" hidden>
     <h2>2 · Detected structure</h2>
+    <!-- Editable, not just displayed. A wrong tempo or key poisons every
+         stem generated afterwards, so correcting it must be one edit. -->
     <div class="stats">
-      <div><span id="stat-bpm">—</span><small>BPM</small></div>
-      <div><span id="stat-key">—</span><small>key</small></div>
-      <div><span id="stat-bars">—</span><small>bars</small></div>
+      <label>
+        <input type="number" id="stat-bpm" min="20" max="300" step="0.1">
+        <small>BPM</small>
+      </label>
+      <label>
+        <select id="stat-key"></select>
+        <small>key</small>
+      </label>
+      <label>
+        <select id="stat-mode">
+          <option value="major">major</option>
+          <option value="minor">minor</option>
+        </select>
+        <small>mode</small>
+      </label>
+      <label>
+        <span id="stat-bars">—</span>
+        <small>bars</small>
+      </label>
     </div>
     <p class="hint">
       A solo melody fits many chord progressions, so these are a starting
-      point. Edit any chord and the next generation will use your version.
+      point. Correct anything that sounds wrong — the next generation uses
+      your version.
     </p>
     <div id="chord-grid" class="chord-grid"></div>
-    <button id="save-chords">Save chords</button>
+    <button id="save-analysis">Save changes</button>
   </section>
 
   <!-- Step 3: pick parts and generate -->

@@ -12,8 +12,13 @@ import logging
 import librosa
 import numpy as np
 
+# librosa lazy-loads submodules, and `librosa.feature.rhythm` is not
+# reachable through attribute access alone - it has to be imported.
+import librosa.feature.rhythm
+
+from . import melody
 from .models import Analysis, Bar
-from .theory import KRUMHANSL, TRIADS, pitch_class_to_note
+from .theory import TEMPERLEY, TRIADS, pitch_class_to_note
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +26,17 @@ log = logging.getLogger(__name__)
 # Used when beat tracking fails outright, so the rest of the pipeline still
 # has a usable grid. The user can correct it in the UI.
 FALLBACK_BPM = 120.0
+
+# Tempos are folded into this range by doubling or halving. Beat trackers
+# routinely lock onto a wrong metrical level - reporting 168 for an 84 BPM
+# ballad, say - and the octave is almost always the recoverable part of
+# the error. Chosen wide enough to hold real tempos at their notated value.
+BPM_RANGE = (70.0, 160.0)
+
+# Widening the tempo prior. librosa's default (std_bpm=1.0, start_bpm=120)
+# snaps to 120 whenever onset evidence is weak, which on a solo vocal is
+# often. A wider prior lets the actual onsets win.
+TEMPO_STD_BPM = 2.0
 
 
 def analyze(audio: np.ndarray, sr: int) -> Analysis:
@@ -33,9 +49,12 @@ def analyze(audio: np.ndarray, sr: int) -> Analysis:
     # reported tempo of 0) on clean, sustained material like a solo vocal.
     onset_env = librosa.onset.onset_strength(y=mono, sr=sr)
 
+    # Pitch-tracked once and shared by key detection and chord estimation.
+    notes = melody.track(mono, sr)
+
     bpm, beat_times = _estimate_tempo(onset_env, sr)
     downbeat = _estimate_downbeat(onset_env, sr, beat_times)
-    key, mode = _estimate_key(mono, sr)
+    key, mode = _estimate_key(notes)
     bars = _estimate_chords(mono, sr, bpm, downbeat, key, mode)
 
     return Analysis(
@@ -48,16 +67,67 @@ def analyze(audio: np.ndarray, sr: int) -> Analysis:
     )
 
 
+def rebuild_bar_grid(analysis: Analysis) -> None:
+    """Re-slice the bars after the user corrects the tempo, in place.
+
+    Bar boundaries are derived from BPM, so a corrected tempo has to
+    re-cut them. Existing chords are carried over by position; bars that
+    did not exist before inherit the last known chord.
+    """
+    previous = [bar.chord for bar in analysis.bars]
+    fallback = previous[-1] if previous else analysis.key
+
+    bars: list[Bar] = []
+    index = 0
+    start = analysis.downbeat_offset_s
+    while start < analysis.duration:
+        end = min(start + analysis.seconds_per_bar, analysis.duration)
+        chord = previous[index] if index < len(previous) else fallback
+        bars.append(Bar(index=index, start=float(start), end=float(end), chord=chord))
+        index += 1
+        start = end
+
+    analysis.bars = bars
+
+
 def _estimate_tempo(onset_env: np.ndarray, sr: int) -> tuple[float, np.ndarray]:
-    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, units="frames")
-    tempo = float(np.atleast_1d(tempo)[0])
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+    """Tempo and beat positions, corrected for metrical-level errors.
+
+    Tempo is estimated separately from beat tracking so the prior can be
+    widened - `beat_track` exposes no `std_bpm` - and the result is then
+    handed back to `beat_track` as a fixed tempo so the beat grid agrees
+    with the reported BPM instead of re-deriving its own.
+    """
+    tempo = float(np.atleast_1d(
+        librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr, std_bpm=TEMPO_STD_BPM)
+    )[0])
 
     if tempo <= 0:
-        log.warning("beat tracking failed; falling back to %.0f BPM", FALLBACK_BPM)
-        return FALLBACK_BPM, beat_times
+        log.warning("tempo estimation failed; falling back to %.0f BPM", FALLBACK_BPM)
+        tempo = FALLBACK_BPM
 
-    return tempo, beat_times
+    folded = _fold_tempo(tempo)
+    if abs(folded - tempo) > 0.01:
+        log.info("folded tempo %.1f -> %.1f BPM", tempo, folded)
+
+    _, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_env, sr=sr, units="frames", bpm=folded
+    )
+    return folded, librosa.frames_to_time(beat_frames, sr=sr)
+
+
+def _fold_tempo(bpm: float) -> float:
+    """Double or halve until the tempo sits in a musically plausible range.
+
+    A tracker reporting 168 for an 84 BPM song is not wrong about the
+    pulse, only about which level of it to call the beat.
+    """
+    low, high = BPM_RANGE
+    while bpm < low:
+        bpm *= 2
+    while bpm > high:
+        bpm /= 2
+    return bpm
 
 
 def _estimate_downbeat(onset_env: np.ndarray, sr: int, beat_times: np.ndarray) -> float:
@@ -83,20 +153,59 @@ def _estimate_downbeat(onset_env: np.ndarray, sr: int, beat_times: np.ndarray) -
     return float(beat_times[best_offset])
 
 
-def _estimate_key(mono: np.ndarray, sr: int) -> tuple[str, str]:
-    """Correlate average chroma against all 24 Krumhansl-Schmuckler profiles."""
-    chroma = librosa.feature.chroma_cqt(y=mono, sr=sr)
-    average = chroma.mean(axis=1)
+# How much melodic landing evidence counts, relative to profile
+# correlation (which is in [-1, 1]). Phrase endings are the strongest
+# single cue for a tonic, so they outweigh the final and first note alone.
+ENDING_WEIGHT = 0.35
+FINAL_WEIGHT = 0.20
+FIRST_WEIGHT = 0.10
+
+
+def _estimate_key(notes: list[melody.Note]) -> tuple[str, str]:
+    """Find the key from pitch-tracked notes.
+
+    Profile correlation alone cannot distinguish a key from its relative -
+    A minor and C major contain exactly the same twelve-tone distribution,
+    so the histogram is identical and the correlation is a coin flip. What
+    separates them is *where the melody lands*: phrases resolve to the
+    tonic. So we score each candidate key by profile correlation plus
+    bonuses for the tonic appearing at structurally important moments.
+    """
+    if not notes:
+        log.warning("no pitched notes found; defaulting to C major")
+        return "C", "major"
+
+    histogram = melody.duration_histogram(notes)
+
+    # Where the melody lands, as duration-weighted pitch-class evidence.
+    endings = _pitch_class_weights(melody.phrase_endings(notes))
+    final = notes[-1].pitch_class
+    first = notes[0].pitch_class
 
     best = ("C", "major", -np.inf)
-    for mode, profile in KRUMHANSL.items():
+    for mode, profile in TEMPERLEY.items():
         for tonic in range(12):
             rotated = np.roll(profile, tonic)
-            score = float(np.corrcoef(average, rotated)[0, 1])
+            score = float(np.corrcoef(histogram, rotated)[0, 1])
+            score += ENDING_WEIGHT * endings[tonic]
+            score += FINAL_WEIGHT * (1.0 if final == tonic else 0.0)
+            score += FIRST_WEIGHT * (1.0 if first == tonic else 0.0)
+
             if score > best[2]:
                 best = (pitch_class_to_note(tonic), mode, score)
 
+    log.debug("key %s %s (score %.3f)", best[0], best[1], best[2])
     return best[0], best[1]
+
+
+def _pitch_class_weights(notes: list[melody.Note]) -> np.ndarray:
+    """Duration-weighted pitch-class distribution over a subset of notes."""
+    weights = np.zeros(12, dtype=np.float64)
+    for note in notes:
+        weights[note.pitch_class] += note.duration
+
+    total = weights.sum()
+    return weights / total if total > 0 else weights
 
 
 def _estimate_chords(
