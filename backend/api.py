@@ -39,7 +39,7 @@ class GenerateRequest(BaseModel):
     session_id: str
     part: str
     style: str = ""
-    noise: float = config.DEFAULT_NOISE
+    noise: float | None = None  # None -> per-part default
     backend: str | None = None
     seed: int | None = None
 

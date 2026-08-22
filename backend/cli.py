@@ -25,8 +25,9 @@ def main() -> int:
     parser.add_argument("--part", choices=PARTS, help="which backing part to generate")
     parser.add_argument("--all", action="store_true", help="generate every part")
     parser.add_argument("--style", default="", help='free-text style, e.g. "bossa nova"')
-    parser.add_argument("--noise", type=float, default=config.DEFAULT_NOISE,
-                        help="0-1; higher diverges further from the guide")
+    parser.add_argument("--noise", type=float,
+                        help="0-1; higher diverges further from the guide. "
+                             "Default is per-part (see config.PART_NOISE)")
     parser.add_argument("--backend", choices=list(sa3_backend.BACKENDS),
                         help=f"default: {config.DEFAULT_BACKEND}")
     parser.add_argument("--seed", type=int, help="fixed seed, for reproducible output")
@@ -50,6 +51,7 @@ def main() -> int:
 
     parts = list(PARTS) if args.all else [args.part]
     noise_values = [float(v) for v in args.sweep.split(",")] if args.sweep else [args.noise]
+    # None means "let the pipeline pick the per-part default".
 
     for part in parts:
         for noise in noise_values:

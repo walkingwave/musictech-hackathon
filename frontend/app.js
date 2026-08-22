@@ -219,9 +219,11 @@ function renderParts() {
     row.innerHTML = `
       <span class="part-name">${part}</span>
       <input class="style" placeholder="style, e.g. bossa nova, gritty funk">
+      <!-- Range starts at 0.6: below that the model returns the guide
+           track essentially unchanged, so lower values are dead UI. -->
       <label class="noise">
         divergence <output>0.80</output>
-        <input type="range" min="0.3" max="0.95" step="0.05" value="0.8">
+        <input type="range" min="0.6" max="0.95" step="0.05" value="0.8">
       </label>
       <button class="generate">Generate</button>
       <span class="badge"></span>
@@ -246,7 +248,14 @@ async function generatePart(part, row, { style, noise }) {
   const badge = row.querySelector('.badge');
 
   button.disabled = true;
-  button.textContent = 'Generating…';
+
+  // Local generation takes tens of seconds — a static label reads as a
+  // frozen page, so count up while we wait.
+  const startedAt = Date.now();
+  button.textContent = 'Generating… 0s';
+  const ticker = setInterval(() => {
+    button.textContent = `Generating… ${Math.round((Date.now() - startedAt) / 1000)}s`;
+  }, 1000);
 
   try {
     const result = await postJSON('/generate', {
@@ -268,11 +277,12 @@ async function generatePart(part, row, { style, noise }) {
 
     await loadBuffer(part, result.audio_url);
     renderTracks();
-    button.textContent = 'Regenerate';
+    button.textContent = `Regenerate (${Math.round((Date.now() - startedAt) / 1000)}s)`;
   } catch (error) {
     toast(`${part} failed — ${error.message}`);
     button.textContent = 'Generate';
   } finally {
+    clearInterval(ticker);
     button.disabled = false;
   }
 }
