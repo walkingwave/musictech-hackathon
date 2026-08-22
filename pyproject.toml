@@ -1,0 +1,42 @@
+[project]
+name = "backing-track-generator"
+version = "0.1.0"
+description = "Generate individual backing stems from a vocal melody using Stable Audio 3"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "scipy>=1.14",
+    "soundfile>=0.12",
+    "librosa>=0.10.2",
+    "pretty_midi>=0.2.10",
+    "pyrubberband>=0.3.0",
+]
+
+[project.optional-dependencies]
+# Local Stable Audio 3 inference. Kept optional so teammates can run the app
+# with the mock or api backend without downloading gated model weights.
+local = [
+    "stable-audio-3 @ git+https://github.com/Stability-AI/stable-audio-3",
+    "torch>=2.4",
+    "torchaudio>=2.4",
+]
+
+[project.scripts]
+btg = "backend.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+# The `local` extra installs stable-audio-3 straight from git, which
+# hatchling treats as a direct reference and blocks unless opted in.
+[tool.hatch.metadata]
+allow-direct-references = true

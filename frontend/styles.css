@@ -1,0 +1,174 @@
+/* Dark, compact, one-screen. No framework — edit and refresh. */
+
+:root {
+  --bg: #12131a;
+  --panel: #1b1d27;
+  --line: #2c2f3d;
+  --text: #e8e9f0;
+  --dim: #8b8fa3;
+  --accent: #6c7cff;
+  --hot: #ff5c72;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { font-size: 1.1rem; margin: 0; }
+h2 { font-size: .95rem; margin: 0 0 .75rem; color: var(--dim); font-weight: 600; }
+
+main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.or { color: var(--dim); font-size: .85rem; }
+.status { color: var(--dim); font-size: .85rem; }
+.hint { color: var(--dim); font-size: .82rem; margin: 0 0 .75rem; }
+
+/* --- controls --- */
+
+button, .button, .file-button {
+  background: #262938;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: .45rem .9rem;
+  font: inherit;
+  font-size: .88rem;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button:hover:not(:disabled), .button:hover, .file-button:hover { border-color: var(--accent); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.recording { background: var(--hot); border-color: var(--hot); color: #fff; }
+
+/* --- backend picker --- */
+
+.backend-picker { display: flex; align-items: center; gap: .6rem; }
+.backend-picker .label { color: var(--dim); font-size: .8rem; }
+.segmented { display: flex; gap: 2px; background: #22242f; padding: 2px; border-radius: 8px; }
+.segment { background: transparent; border: none; font-size: .8rem; padding: .35rem .7rem; }
+.segment.active { background: var(--accent); color: #fff; }
+
+/* --- analysis --- */
+
+.stats { display: flex; gap: 2rem; margin-bottom: 1rem; }
+.stats div { display: flex; flex-direction: column; }
+.stats span { font-size: 1.5rem; font-weight: 600; }
+.stats small { color: var(--dim); font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+
+.chord-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: .4rem;
+  margin-bottom: .9rem;
+}
+
+.chord-grid input {
+  background: #22242f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: .4rem;
+  text-align: center;
+  font: inherit;
+  font-size: .85rem;
+  width: 100%;
+}
+
+.chord-grid input:focus { outline: none; border-color: var(--accent); }
+
+/* --- parts --- */
+
+.part-row {
+  display: grid;
+  grid-template-columns: 5rem 1fr auto auto 4rem;
+  align-items: center;
+  gap: .75rem;
+  padding: .6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.part-row:last-child { border-bottom: none; }
+.part-name { text-transform: capitalize; font-weight: 600; font-size: .9rem; }
+
+.part-row .style {
+  background: #22242f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: .4rem .6rem;
+  font: inherit;
+  font-size: .85rem;
+}
+
+.part-row .style:focus { outline: none; border-color: var(--accent); }
+
+.noise { display: flex; align-items: center; gap: .4rem; color: var(--dim); font-size: .75rem; }
+.noise input { width: 90px; }
+
+.badge { font-size: .7rem; color: var(--dim); text-align: right; }
+
+/* --- tracks --- */
+
+.tracks { margin-top: 1rem; display: grid; gap: .4rem; }
+
+.track {
+  display: grid;
+  grid-template-columns: 6rem auto auto 1fr;
+  align-items: center;
+  gap: .6rem;
+}
+
+.track-name { text-transform: capitalize; font-size: .85rem; }
+.track button { padding: .25rem .55rem; font-size: .75rem; }
+.track button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.track .volume { width: 100%; }
+
+/* --- toast --- */
+
+.toast {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: .6rem 1rem;
+  font-size: .85rem;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+}
+
+audio { width: 100%; margin-top: .75rem; }
