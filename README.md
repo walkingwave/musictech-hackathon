@@ -1,3 +1,3 @@
 # musictech-hackathon
 
-montreal
+Project Track: Stable Audio
