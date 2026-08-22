@@ -463,10 +463,6 @@ export default function Studio({
         </div>
       </div>
 
-      {/* Describe a whole arrangement in words. Sits below the toolbar,
-          full width, because it is the primary way in for someone starting
-          from nothing rather than from a recording. */}
-      <AskBar busy={busy} onRun={runRequest} status={status} />
 
       <div className="arrangement">
         <div className="headers" style={{ width: HEADER_W }}>
@@ -560,6 +556,11 @@ export default function Studio({
           }}
         />
       )}
+
+      {/* Pinned to the bottom of the window, below the clip inspector.
+          Full width because describing an arrangement in words is the
+          primary way in for someone starting from nothing. */}
+      <AskBar busy={busy} onRun={runRequest} status={status} />
     </div>
   );
 }

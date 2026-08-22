@@ -345,7 +345,14 @@ input[type="range"] { accent-color: var(--ink); }
 
 /* ===== Studio — arrangement view (light, on-brand) ==================== */
 
-.studio { background: var(--bg); color: var(--ink); min-height: calc(100vh - 47px); }
+/* Column layout so the ask bar can pin to the bottom of the viewport and
+   the arrangement takes the remaining height. */
+.studio {
+  background: var(--bg); color: var(--ink);
+  min-height: calc(100vh - 47px);
+  display: flex; flex-direction: column;
+}
+.studio .arrangement { flex: 1 1 auto; }
 
 .studio-bar {
   display: flex; align-items: center; gap: 1.25rem;
@@ -553,9 +560,11 @@ input[type="range"] { accent-color: var(--ink); }
 /* ===== Agentic request bar ============================================ */
 
 .askbar {
+  position: sticky; bottom: 0; z-index: 30;
   display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.55rem 1.25rem; background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  padding: 0.65rem 1.25rem; background: var(--panel);
+  border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.05);
 }
 .ask-input {
   flex: 1; font: inherit; font-size: 0.85rem;
