@@ -36,4 +36,6 @@ export const updateAnalysis = (sessionId, edit) =>
 export const generate = (body) => postJSON('/generate', body);
 
 export const vocalUrl = (sessionId) => `/api/session/${sessionId}/vocal.wav`;
+export const stemUrl = (sessionId, part) =>
+  `/api/session/${sessionId}/audio/stems/${part}.wav`;
 export const exportUrl = (sessionId) => `/api/session/${sessionId}/export`;

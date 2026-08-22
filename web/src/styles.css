@@ -273,22 +273,49 @@ textarea:focus { outline: none; border-color: var(--ink); }
 
 /* --- tracks / mixer ---------------------------------------------------- */
 
-.track {
-  display: grid;
-  grid-template-columns: 6.5rem auto auto 1fr auto;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.7rem 0;
-  border-bottom: 1px solid var(--line);
-}
-.track:last-child { border-bottom: none; }
-.track-name { font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.72rem; }
-.track .toggle { padding: 0.3rem 0.55rem; font-size: 0.62rem; }
-.track .toggle.on { background: var(--ink); color: #fff; border-color: var(--ink); }
-.track .volume { width: 100%; accent-color: var(--ink); }
-.track .stem-badge { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); letter-spacing: 0.08em; }
+.track-block { padding: 0.85rem 0; border-bottom: 1px solid var(--line); }
+.track-block:last-child { border-bottom: none; }
 
-.transport { display: flex; gap: 0.6rem; }
+.track-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 0.55rem;
+}
+.track-name { font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.72rem; }
+.track-controls { display: flex; align-items: center; gap: 0.5rem; }
+.track-controls .toggle { padding: 0.3rem 0.55rem; font-size: 0.62rem; }
+.track-controls .toggle.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.track-controls .volume { width: 90px; accent-color: var(--ink); }
+.mini {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 0.6rem; text-decoration: none;
+  border: 1px solid var(--line-strong); color: var(--ink);
+  padding: 0.3rem 0.5rem; cursor: pointer; background: var(--panel);
+}
+.mini:hover { border-color: var(--ink); }
+.mini.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* waveform */
+.waveform { position: relative; width: 100%; overflow: hidden; cursor: text; background: #fbfaf7; border: 1px solid var(--line); }
+.waveform canvas { display: block; width: 100% !important; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--hot); pointer-events: none; }
+
+/* per-track regenerate panel */
+.regen-panel {
+  display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;
+  margin-top: 0.6rem; padding: 0.7rem; background: #f6f4ef; border: 1px solid var(--line);
+}
+.regen-prompt {
+  flex: 1; min-width: 12rem;
+  border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.45rem 0.6rem; font: 0.85rem var(--sans); color: var(--ink); background: var(--panel);
+}
+.regen-prompt:focus { outline: none; border-color: var(--ink); }
+.regen-panel .stem-badge { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); letter-spacing: 0.08em; }
+.noise { display: flex; align-items: center; gap: 0.4rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.6rem; color: var(--muted-ink); }
+.noise input { width: 80px; accent-color: var(--ink); }
+
+.transport { display: flex; align-items: center; gap: 0.6rem; }
+.transport .time { font-family: var(--mono); font-size: 0.66rem; color: var(--muted-ink); letter-spacing: 0.06em; }
 .export {
   font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
   font-size: 0.72rem; text-decoration: none;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as apiClient from './api.js';
+import { blobToWav } from './wav.js';
 import { useMultitrack } from './useMultitrack.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
@@ -31,6 +32,20 @@ export default function App() {
     window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
   }, []);
 
+  // The server forgets a session if it restarts. Rather than surface a raw
+  // 404, drop back to the input view and ask for a fresh recording.
+  const isLostSession = (error) =>
+    /404|no such session/i.test(error.message || '');
+
+  const resetSession = useCallback(() => {
+    setSessionId(null);
+    setAnalysis(null);
+    setFileName(null);
+    setStems({});
+    setView('input');
+    flash('Session expired — record or upload again');
+  }, [flash]);
+
   useEffect(() => {
     apiClient
       .listBackends()
@@ -59,38 +74,51 @@ export default function App() {
 
   const submitVocal = async (blob, filename) => {
     flash('Analyzing…');
-    setFileName(filename);
     try {
-      const result = await apiClient.analyze(blob, filename);
+      // Re-encode to WAV in the browser — the backend has no ffmpeg and
+      // libsndfile cannot read the recorder's webm/opus.
+      const wav = await blobToWav(blob);
+      const wavName = filename.replace(/\.[^.]+$/, '') + '.wav';
+      const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
+      setFileName(wavName);
       setStems({});
       engine.loadBuffer('vocal', apiClient.vocalUrl(result.session_id));
       flash('Analyzed — set your prompt and generate');
     } catch (error) {
+      setFileName(null);
       flash(`Analysis failed — ${error.message}`);
     }
   };
 
   // Generate one stem, loading it into the mixer. Shared by the initial
   // batch and per-stem regenerate.
-  const generateOne = async (part, seed) => {
+  const generateOne = async (part, opts = {}) => {
     setBusyPart(part);
     try {
       const result = await apiClient.generate({
         session_id: sessionId,
         part,
-        style: prompt,
+        // Per-track regenerate can override the prompt and divergence.
+        style: opts.style != null ? opts.style : prompt,
+        noise: opts.noise,
         backend,
-        seed,
+        seed: opts.seed,
       });
       setStems((prev) => ({ ...prev, [part]: result }));
       if (result.backend_used !== backend) {
         flash(`${backend} unavailable — used ${result.backend_used}`);
       }
       await engine.loadBuffer(part, result.audio_url);
+      return true;
     } catch (error) {
+      if (isLostSession(error)) {
+        resetSession();
+        return false;
+      }
       flash(`${part} failed — ${error.message}`);
+      return true;
     } finally {
       setBusyPart(null);
     }
@@ -102,13 +130,16 @@ export default function App() {
       const updated = await apiClient.updateAnalysis(sessionId, analysisEdit);
       setAnalysis(updated);
       // Generate selected stems in sequence — the local backend is single
-      // model, so parallel calls would just contend.
+      // model, so parallel calls would just contend. Stop early if the
+      // session was lost mid-batch.
       for (const part of selected) {
-        await generateOne(part);
+        const ok = await generateOne(part);
+        if (!ok) return;
       }
       setView('tracks');
     } catch (error) {
-      flash(`Could not generate — ${error.message}`);
+      if (isLostSession(error)) resetSession();
+      else flash(`Could not generate — ${error.message}`);
     } finally {
       setGenerating(false);
     }
@@ -142,8 +173,13 @@ export default function App() {
         <TracksView
           engine={engine}
           stems={stems}
-          onRegenerate={(part) => generateOne(part, Math.floor(Math.random() * 1e9))}
+          onRegenerate={(part, opts) =>
+            generateOne(part, { ...opts, seed: Math.floor(Math.random() * 1e9) })
+          }
           busyPart={busyPart}
+          defaultPrompt={prompt}
+          stemUrl={(part) => apiClient.stemUrl(sessionId, part)}
+          vocalUrl={sessionId ? apiClient.vocalUrl(sessionId) : null}
           exportHref={sessionId ? apiClient.exportUrl(sessionId) : null}
         />
       )}
