@@ -219,9 +219,11 @@ function renderParts() {
     row.innerHTML = `
       <span class="part-name">${part}</span>
       <input class="style" placeholder="style, e.g. bossa nova, gritty funk">
+      <!-- Range starts at 0.6: below that the model returns the guide
+           track essentially unchanged, so lower values are dead UI. -->
       <label class="noise">
         divergence <output>0.80</output>
-        <input type="range" min="0.3" max="0.95" step="0.05" value="0.8">
+        <input type="range" min="0.6" max="0.95" step="0.05" value="0.8">
       </label>
       <button class="generate">Generate</button>
       <span class="badge"></span>

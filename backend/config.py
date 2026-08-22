@@ -25,9 +25,23 @@ SAMPLE_RATE = 44100
 # --- generation defaults -----------------------------------------------
 
 # How far the model is allowed to drift from the guide track.
-# Higher = more divergence. Stability's docs suggest starting at 0.8 and
-# dropping to 0.6-0.75 if the output wanders off the guide.
+# Higher = more divergence.
+#
+# Measured on sm-music against a synthesized bass guide, comparing output
+# to the guide it was conditioned on:
+#
+#   0.40  waveform correlation 0.85, centroid 4026Hz  - passthrough, the
+#         model hands the guide straight back
+#   0.60  correlation 0.08, centroid 3774Hz           - decorrelated but
+#         still saw-bright, not a bass timbre
+#   0.75  correlation 0.00, centroid  537Hz           - genuinely new audio
+#   0.90  correlation 0.02, centroid  435Hz           - most instrument-like
+#
+# So anything below MIN_USEFUL_NOISE is wasted UI range: the timbre does
+# not change. Grid lock held at every level tested (99.4 BPM, zero drift),
+# so raising this costs nothing in timing.
 DEFAULT_NOISE = 0.8
+MIN_USEFUL_NOISE = 0.6
 
 # Sampling steps. Post-trained models are tuned for very few steps.
 DEFAULT_STEPS = 8
