@@ -20,11 +20,22 @@ SCALES = {
     "minor": [0, 2, 3, 5, 7, 8, 10],  # natural minor
 }
 
-# Krumhansl-Schmuckler key profiles. Correlating a piece's average chroma
-# against rotations of these is the standard way to guess a key.
+# Krumhansl-Schmuckler key profiles, from probe-tone experiments.
+# Correlating a piece's pitch distribution against rotations of these is
+# the classic way to guess a key.
 KRUMHANSL = {
     "major": [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
     "minor": [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+}
+
+# Temperley's profiles, derived from the Kostka-Payne corpus. Preferred
+# here because they separate a key from its relative better than
+# Krumhansl's: the minor profile puts much less weight on the relative
+# major's tonic (scale degree 3), which is exactly the confusion that
+# makes A minor come back as C major.
+TEMPERLEY = {
+    "major": [0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400],
+    "minor": [0.712, 0.084, 0.474, 0.618, 0.049, 0.460, 0.105, 0.747, 0.404, 0.067, 0.133, 0.330],
 }
 
 

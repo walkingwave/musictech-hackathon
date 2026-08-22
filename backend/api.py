@@ -21,7 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, pipeline, sa3_backend
-from .models import PARTS, Analysis
+from .analysis import rebuild_bar_grid
+from .models import PARTS
 from .session import Session
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -43,8 +44,18 @@ class GenerateRequest(BaseModel):
     seed: int | None = None
 
 
-class ChordsRequest(BaseModel):
-    chords: list[str]  # one per bar, in order
+class AnalysisEdit(BaseModel):
+    """User corrections to the detected structure. Every field optional.
+
+    Detection is good but not perfect, and a wrong key or tempo poisons
+    every stem generated afterwards. Correcting it has to be one edit, not
+    a re-record.
+    """
+
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    chords: list[str] | None = None  # one per bar, in order
 
 
 # --- routes -------------------------------------------------------------
@@ -74,23 +85,38 @@ async def analyze(file: UploadFile) -> dict:
     return {"session_id": session.id, "analysis": analysis.to_dict()}
 
 
-@app.patch("/api/session/{session_id}/chords")
-def update_chords(session_id: str, request: ChordsRequest) -> dict:
-    """Replace the detected chords with the user's corrections.
+@app.patch("/api/session/{session_id}/analysis")
+def update_analysis(session_id: str, edit: AnalysisEdit) -> dict:
+    """Apply user corrections to the detected structure.
 
-    Chord detection on a solo vocal is genuinely ambiguous, so the user
-    gets the final say. Later generations use the corrected grid.
+    Later generations use the corrected values. Changing the tempo
+    rebuilds the bar grid, since bar boundaries are derived from it.
     """
     session = _load(session_id)
     analysis = session.analysis
 
-    if len(request.chords) != len(analysis.bars):
-        raise HTTPException(400, f"expected {len(analysis.bars)} chords, got {len(request.chords)}")
+    if edit.key is not None:
+        analysis.key = edit.key
+    if edit.mode is not None:
+        if edit.mode not in ("major", "minor"):
+            raise HTTPException(400, "mode must be 'major' or 'minor'")
+        analysis.mode = edit.mode
 
-    for bar, chord in zip(analysis.bars, request.chords):
-        bar.chord = chord
+    if edit.bpm is not None:
+        if not 20 <= edit.bpm <= 300:
+            raise HTTPException(400, "bpm must be between 20 and 300")
+        analysis.bpm = edit.bpm
+        rebuild_bar_grid(analysis)
+
+    if edit.chords is not None:
+        if len(edit.chords) != len(analysis.bars):
+            raise HTTPException(
+                400, f"expected {len(analysis.bars)} chords, got {len(edit.chords)}"
+            )
+        for bar, chord in zip(analysis.bars, edit.chords):
+            bar.chord = chord
+
     session.save_analysis(analysis)
-
     return analysis.to_dict()
 
 

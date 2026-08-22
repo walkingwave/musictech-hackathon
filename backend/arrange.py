@@ -15,6 +15,7 @@ import librosa
 import numpy as np
 import pretty_midi
 
+from . import melody
 from .models import Analysis, Part
 from .theory import chord_to_midi, parse_chord, transpose_diatonic
 
@@ -129,13 +130,6 @@ def _arrange_drums(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_mid
 
 # --- harmony ------------------------------------------------------------
 
-# Confidence floor for pitch tracking. Frames below this are treated as
-# unvoiced (breaths, consonants, silence) and produce no harmony note.
-PYIN_CONFIDENCE = 0.5
-
-# Ignore blips shorter than this; they are usually tracking artifacts.
-MIN_NOTE_DURATION = 0.08
-
 
 def _arrange_harmony(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_midi.PrettyMIDI:
     """Track the vocal's pitch, then sing a diatonic third above it.
@@ -147,46 +141,11 @@ def _arrange_harmony(analysis: Analysis, vocal: np.ndarray, sr: int) -> pretty_m
     midi, instrument = _new_midi(analysis, "harmony")
     mono = librosa.to_mono(vocal) if vocal.ndim > 1 else vocal
 
-    for pitch, start, end in _track_melody(mono, sr):
-        harmonized = transpose_diatonic(pitch, steps=2, key=analysis.key, mode=analysis.mode)
-        _add(instrument, harmonized, start, end, velocity=80)
+    for note in melody.track(mono, sr):
+        harmonized = transpose_diatonic(note.pitch, steps=2, key=analysis.key, mode=analysis.mode)
+        _add(instrument, harmonized, note.start, note.end, velocity=80)
 
     return midi
-
-
-def _track_melody(mono: np.ndarray, sr: int) -> list[tuple[int, float, float]]:
-    """Pitch-track a monophonic vocal into (midi_pitch, start, end) notes.
-
-    Consecutive frames at the same pitch are merged into one note, which
-    is what turns a frame-rate f0 contour into something playable.
-    """
-    f0, voiced, confidence = librosa.pyin(
-        mono,
-        fmin=float(librosa.note_to_hz("C2")),
-        fmax=float(librosa.note_to_hz("C6")),
-        sr=sr,
-    )
-    times = librosa.times_like(f0, sr=sr)
-
-    notes: list[tuple[int, float, float]] = []
-    current_pitch: int | None = None
-    note_start = 0.0
-
-    for i, frequency in enumerate(f0):
-        is_voiced = bool(voiced[i]) and confidence[i] >= PYIN_CONFIDENCE and np.isfinite(frequency)
-        pitch = int(round(librosa.hz_to_midi(frequency))) if is_voiced else None
-
-        if pitch != current_pitch:
-            if current_pitch is not None and times[i] - note_start >= MIN_NOTE_DURATION:
-                notes.append((current_pitch, note_start, float(times[i])))
-            current_pitch = pitch
-            note_start = float(times[i])
-
-    # Close the final note, if the clip ends mid-phrase.
-    if current_pitch is not None and times[-1] - note_start >= MIN_NOTE_DURATION:
-        notes.append((current_pitch, note_start, float(times[-1])))
-
-    return notes
 
 
 ARRANGERS = {
