@@ -271,45 +271,68 @@ EVERYTHING = ("full band", "whole band", "everything", "full arrangement")
 DEFAULT_BAND = ("bass", "drums", "piano", "harmony")
 
 
-def _fuzzy_instruments(lower: str, claimed: list[tuple[int, int]]) -> list[tuple[str, str, str]]:
-    """Catch misspelled instrument names the exact matcher missed.
+# Words that hint at a rhythmic role when the instrument is unknown to us.
+# Only used to pick which guide to build - the prompt text is always the
+# user's own words.
+ROLE_HINTS = (
+    ("bass", ("bass", "sub", "808", "contrabass", "tuba")),
+    ("drums", ("drum", "cymbal", "perc", "timpani", "conga", "bongo", "snare",
+               "kick", "hat", "tabla", "djembe", "shaker", "tambourine", "gong")),
+    ("harmony", ("pad", "string", "choir", "vocal", "aah", "brass", "horn",
+                 "swell", "drone", "ambient")),
+    ("guitar", ("guitar", "banjo", "mandolin", "ukulele", "sitar", "lute")),
+)
 
-    People type "cylophone". The Claude path reads through that without
-    help; the keyword path would silently drop the track, which is the
-    failure mode worth avoiding — a dropped instrument looks like the app
-    ignoring you.
+# Leading words that are instruction, not instrument. Stripped repeatedly,
+# because a real request stacks several: "add 4 more tracks, ...".
+FILLER = re.compile(
+    r"^(?:add|also|give me|i want|i need|can you|please|make|create|generate|"
+    r"another|some|a|an|the|more|of|with|tracks?|parts?|\d+|one|two|three|"
+    r"four|five|six|seven|eight|nine|ten|couple|few)\b\s*"
+)
+
+
+def _role_for(phrase: str) -> str:
+    """Guess which guide an unknown instrument should follow.
+
+    Defaults to `piano`, the chordal role: it is the least wrong choice for
+    an arbitrary pitched instrument, and unlike bass or drums it neither
+    doubles the low end nor produces unpitched noise.
     """
-    import difflib
+    for part, hints in ROLE_HINTS:
+        if any(h in phrase for h in hints):
+            return part
+    return "piano"
 
-    out: list[tuple[str, str, str]] = []
-    for match in re.finditer(r"[a-z]{5,}", lower):
-        if any(a <= match.start() < b for a, b in claimed):
-            continue
-        close = difflib.get_close_matches(match.group(), INSTRUMENTS, n=1, cutoff=0.8)
-        if close:
-            part, instrument = INSTRUMENTS[close[0]]
-            out.append((part, instrument, close[0]))
-    return out
+
+def _split_requests(text: str) -> list[str]:
+    """Break a request into one fragment per instrument.
+
+    Splitting on the list separators the user typed is far more robust than
+    matching a vocabulary: it works for instruments we have never heard of,
+    which is the whole point.
+    """
+    text = re.sub(r"\b(?:in|with)\s+(?:a|an|the)?\s*[\w\s-]*\bstyle\b", " ", text)
+    parts = re.split(r"[,:;]|\band\b|\bplus\b|/|&|\n", text.lower())
+    return [p.strip(" .!?") for p in parts if p.strip()]
+
+
+def _clean_instrument(fragment: str) -> str:
+    """Strip leading filler until only the instrument is left.
+
+    Applied repeatedly: "add 4 more tracks" sheds four separate words, and
+    stopping after one would leave "4 more tracks" looking like a request
+    for an instrument called that.
+    """
+    previous = None
+    while previous != fragment:
+        previous = fragment
+        fragment = FILLER.sub("", fragment).strip()
+    return fragment
 
 
 def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
     lower = f" {text.lower()} "
-
-    if any(phrase in lower for phrase in EVERYTHING):
-        found = [(p, "", p) for p in DEFAULT_BAND]
-    else:
-        # Longest names first, so "wah bass" is not consumed by "bass" and
-        # "acoustic guitar" is not consumed by "guitar".
-        found, claimed = [], []
-        for word in sorted(INSTRUMENTS, key=len, reverse=True):
-            index = lower.find(f" {word}")
-            if index < 0 or any(a <= index < b for a, b in claimed):
-                continue
-            claimed.append((index, index + len(word) + 1))
-            part, instrument = INSTRUMENTS[word]
-            found.append((part, instrument, word))
-        found.sort(key=lambda f: lower.find(f[2]))
-        found.extend(_fuzzy_instruments(lower, claimed))
 
     groove = grooves.for_style(lower)
     style = groove.name if groove.name != "straight" else ""
@@ -320,12 +343,63 @@ def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
         style = context.style
         groove = grooves.for_style(style)
 
+    if any(phrase in lower for phrase in EVERYTHING):
+        tracks = [TrackSpec(part=p, name=p, instrument="") for p in DEFAULT_BAND]
+        return Plan(tracks=tracks, style=style, groove=groove.name)
+
+    tracks: list[TrackSpec] = []
+    for fragment in _split_requests(text):
+        phrase = _clean_instrument(fragment)
+        if not phrase or phrase == style or phrase in groove.keywords:
+            continue
+
+        known = _lookup(phrase)
+        if known:
+            part, instrument, name = known
+        else:
+            # Unknown to us, but the user still asked for it. Their words
+            # become the prompt verbatim; we only guess the guide to follow.
+            part, instrument, name = _role_for(phrase), phrase, phrase
+
+        tracks.append(
+            TrackSpec(
+                part=part,
+                name="-".join(name.split())[:40],
+                instrument=instrument,
+            )
+        )
+
     return Plan(
-        tracks=[
-            TrackSpec(part=part, name=word.replace(" ", "-"), instrument=instrument)
-            for part, instrument, word in found
-        ],
+        tracks=tracks,
         style=style,
         groove=groove.name,
-        notes="" if found else "No instruments recognised — try naming them, e.g. 'bass and drums'.",
+        notes="" if tracks else "Name the instruments you want, e.g. 'bass, drums and a Rhodes'.",
     )
+
+
+def _lookup(phrase: str) -> tuple[str, str, str] | None:
+    """Match a fragment against the known-instrument table, typos included.
+
+    The table exists to supply a *better* description than the user's bare
+    word ("timpani" alone is a thin prompt) and to pin the right role. It is
+    an enhancement, not a gate - anything it misses still gets generated.
+    """
+    import difflib
+
+    if phrase in INSTRUMENTS:
+        part, instrument = INSTRUMENTS[phrase]
+        return part, instrument or "", phrase
+
+    for word in sorted(INSTRUMENTS, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(word)}\b", phrase):
+            part, instrument = INSTRUMENTS[word]
+            # Keep any extra adjectives the user typed around the match.
+            extra = phrase.replace(word, "").strip()
+            described = ", ".join(filter(None, [instrument or word, extra]))
+            return part, described, phrase
+
+    close = difflib.get_close_matches(phrase, INSTRUMENTS, n=1, cutoff=0.8)
+    if close:
+        part, instrument = INSTRUMENTS[close[0]]
+        return part, instrument or close[0], close[0]
+    return None
