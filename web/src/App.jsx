@@ -5,6 +5,7 @@ import { useTimeline } from './useTimeline.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
 import Studio from './components/Studio.jsx';
+import InstrumentView from './components/InstrumentView.jsx';
 
 const PART_LABEL = { bass: 'Bass', drums: 'Drums', piano: 'Piano', harmony: 'Harmony' };
 
@@ -193,6 +194,39 @@ export default function App() {
     [sessionId, backend, resetSession, ensureSession],
   );
 
+  // Played notes -> a generated instrument, dropped onto the timeline as a
+  // clip. Creates the session if this is the first thing the user does.
+  const createInstrument = useCallback(
+    async ({ notes, prompt, name, bars: clipBars }) => {
+      const result = await apiClient.generateFromMidi({
+        session_id: sessionId,
+        notes,
+        prompt,
+        name,
+        bars: clipBars,
+        backend,
+        bpm: studioBpm,
+        key: studioKey,
+        mode: studioMode,
+      });
+      if (!sessionId) setSessionId(result.session_id);
+
+      const buffer = await engine
+        .context()
+        .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
+      engine.addTrackWithClip(result.name, 'audio', buffer, {
+        start: 0,
+        prompt: result.instrument,
+        seed: result.seed,
+        backendUsed: result.backend_used,
+        duration: result.duration || buffer.duration,
+      });
+      setView('studio');
+      return result;
+    },
+    [sessionId, backend, studioBpm, studioKey, studioMode, engine],
+  );
+
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
   const studioGenerate = useCallback(
     async (opts) => {
@@ -215,7 +249,21 @@ export default function App() {
         tracksReady={engine.tracks.length > 0}
       />
 
-      {view === 'input' ? (
+      {view === 'instrument' ? (
+        <InstrumentView
+          bpm={studioBpm}
+          bars={bars}
+          busy={generating}
+          onGenerate={async (spec) => {
+            setGenerating(true);
+            try {
+              return await createInstrument(spec);
+            } finally {
+              setGenerating(false);
+            }
+          }}
+        />
+      ) : view === 'input' ? (
         <InputView
           analysis={analysis}
           fileName={fileName}

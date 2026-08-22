@@ -4,6 +4,7 @@ export default function Header({ view, onView, sessionName, tracksReady }) {
   const tabs = [
     { id: 'input', label: 'Input', enabled: true },
     { id: 'studio', label: 'Studio', enabled: true },
+    { id: 'instrument', label: 'New Instrument', enabled: true },
   ];
   return (
     <header className="header">

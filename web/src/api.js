@@ -41,6 +41,10 @@ export const createBlankSession = (body) => postJSON('/session/blank', body);
 // Interpret a plain-English request into a generation plan. The server uses
 // Claude when it has credentials and falls back to keyword matching, so this
 // always returns a plan rather than failing.
+// Played notes + a prompt -> a real instrument. The notes become the guide
+// track, so the performance survives and only the timbre is generated.
+export const generateFromMidi = (body) => postJSON('/generate-from-midi', body);
+
 export const interpret = (text, sessionId) =>
   postJSON('/interpret', { text, session_id: sessionId ?? null });
 

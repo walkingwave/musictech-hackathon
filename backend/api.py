@@ -199,6 +199,67 @@ def interpret_request(request: InterpretRequest) -> dict:
     return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
 
 
+class MidiNote(BaseModel):
+    pitch: int
+    start: float  # beats from the clip's start
+    length: float = 1.0  # beats
+    velocity: int = 90
+
+
+class MidiRequest(BaseModel):
+    session_id: str | None = None
+    notes: list[MidiNote]
+    prompt: str = ""
+    noise: float | None = None
+    backend: str | None = None
+    seed: int | None = None
+    name: str = "instrument"
+    bars: int | None = None
+    # Only used when no session exists yet, so the instrument view works
+    # before anything else has been recorded or generated.
+    bpm: float = 100.0
+    key: str = "A"
+    mode: str = "minor"
+
+
+@app.post("/api/generate-from-midi")
+def generate_from_midi(request: MidiRequest) -> dict:
+    """Turn played notes into a real instrument.
+
+    The notes become the guide track, so the performance is preserved
+    exactly while Stable Audio 3 supplies the sound described by `prompt`.
+    """
+    if not request.notes:
+        raise HTTPException(400, "no notes to generate from")
+
+    if request.session_id:
+        session = _load(request.session_id)
+    else:
+        session, _ = pipeline.create_blank_session(
+            bpm=request.bpm, key=request.key, mode=request.mode, bars=request.bars or 8
+        )
+
+    try:
+        result = pipeline.generate_from_notes(
+            session,
+            notes=[n.model_dump() for n in request.notes],
+            prompt=request.prompt,
+            noise=request.noise,
+            backend=request.backend,
+            seed=request.seed,
+            name=pipeline.track_name(session, "free", request.name),
+            bars=request.bars,
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        **result.to_dict(),
+        "session_id": session.id,
+        "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
+    }
+
+
 @app.get("/api/session/{session_id}/arrangement")
 def get_arrangement(session_id: str) -> dict:
     """The style and length every part in this session shares."""

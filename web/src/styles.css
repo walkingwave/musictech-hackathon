@@ -592,3 +592,40 @@ input[type="range"] { accent-color: var(--ink); }
   width: 22px; height: 3px; background: var(--hot);
   box-shadow: 0 -5px 0 var(--hot), 0 5px 0 var(--hot); opacity: 0.75;
 }
+
+/* ===== Instrument view — play it, then describe it =================== */
+
+.instrument { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem; display: grid; gap: 1.25rem; }
+
+.midi-row { gap: 0.6rem; }
+.midi-status {
+  font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.06em;
+  color: var(--muted-ink); margin-left: auto;
+}
+
+/* Piano roll: key labels in a fixed gutter, scrollable grid beside it. */
+.roll {
+  display: flex; border: 1px solid var(--line-strong); background: var(--bg);
+  margin-top: 0.75rem; overflow: hidden;
+}
+.roll-keys {
+  position: relative; width: 42px; flex: none;
+  border-right: 1px solid var(--line-strong); background: var(--panel);
+}
+.roll-keys span {
+  position: absolute; right: 5px;
+  font-family: var(--mono); font-size: 0.56rem; color: var(--muted);
+  line-height: 12px;
+}
+.roll-grid { flex: 1; min-width: 0; overflow: hidden; }
+
+.preset-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.6rem; }
+.preset {
+  font-size: 0.72rem; padding: 0.28rem 0.6rem;
+  background: var(--badge); color: var(--muted-ink);
+  border: 1px solid transparent; border-radius: 0;
+}
+.preset:hover { border-color: var(--ink); color: var(--ink); }
+
+.instrument .insp-prompt { flex: 1; min-width: 16rem; }
+.instrument .studio-field input { width: 9rem; font-size: 0.85rem; font-weight: 400; }

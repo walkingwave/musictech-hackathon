@@ -11,9 +11,11 @@ others, so this is where to look to understand the flow.
 from __future__ import annotations
 
 import logging
+import math
 import random
 
 import numpy as np
+import pretty_midi
 import soundfile as sf
 
 from . import align, arrange, config, grooves, prompts, render_guide, sa3_backend
@@ -348,6 +350,102 @@ def generate_from_reference(
         duration=len(stem) / SAMPLE_RATE,
         n_bars=max(1, round(duration / analysis.seconds_per_bar)),
     )
+
+
+def generate_from_notes(
+    session: Session,
+    notes: list[dict],
+    prompt: str,
+    noise: float | None = None,
+    backend: str | None = None,
+    seed: int | None = None,
+    name: str = "instrument",
+    bars: int | None = None,
+) -> StemResult:
+    """Play your own notes, then have Stable Audio 3 give them a sound.
+
+    Same guide-track mechanism as every other part, with one difference:
+    the notes come from the user rather than an arranger. That makes this
+    the most direct form of the whole idea — you decide what is played, the
+    model decides what plays it.
+
+    Notes are `{pitch, start, length, velocity}` with times in beats, so a
+    piano roll can speak in bars and beats without knowing the tempo.
+    """
+    analysis = session.analysis
+    seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+    noise = noise if noise is not None else config.default_noise("free")
+
+    beat = analysis.seconds_per_beat
+    midi = pretty_midi.PrettyMIDI(initial_tempo=analysis.bpm)
+    instrument = pretty_midi.Instrument(program=0, name=name)
+    midi.instruments.append(instrument)
+
+    for note in notes:
+        start = float(note["start"]) * beat
+        end = start + max(float(note.get("length", 1)) * beat, 0.05)
+        instrument.notes.append(
+            pretty_midi.Note(
+                velocity=int(note.get("velocity", 90)),
+                pitch=int(np.clip(int(note["pitch"]), 0, 127)),
+                start=start,
+                end=end,
+            )
+        )
+
+    # Long enough to hold every note, rounded up to a whole bar so the clip
+    # lines up with everything else on the timeline.
+    played = max((n.end for n in instrument.notes), default=analysis.seconds_per_bar)
+    target_bars = bars or max(1, math.ceil(played / analysis.seconds_per_bar))
+    duration = target_bars * analysis.seconds_per_bar
+
+    midi_path = session.midi_path(name)
+    midi.write(str(midi_path))
+
+    # `free` renders a plain sustained tone: the notes are already the
+    # user's, so the guide should colour them as little as possible.
+    guide = render_guide.render(midi, duration=duration, part="free")
+    session.write_audio(session.guide_path(name), guide)
+
+    full_prompt = ", ".join(
+        piece
+        for piece in (
+            prompt.strip(),
+            f"{round(analysis.bpm)} BPM",
+            f"{analysis.key} {analysis.mode}",
+            "solo instrument, one layer only, no drums, no vocals",
+        )
+        if piece
+    )
+    log.info("generating from %d played notes [%s] seed=%d", len(notes), full_prompt, seed)
+
+    raw, backend_used = sa3_backend.generate_with_fallback(
+        backend_id=backend,
+        prompt=full_prompt,
+        init_audio=guide,
+        noise=noise,
+        duration=duration,
+        seed=seed,
+    )
+
+    stem = align.align(raw, guide, target_bpm=analysis.bpm)
+    session.write_audio(session.stem_path(name), stem)
+
+    result = StemResult(
+        part="free",
+        name=name,
+        instrument=prompt,
+        wav_path=str(session.stem_path(name).relative_to(session.root)),
+        midi_path=str(midi_path.relative_to(session.root)),
+        backend_used=backend_used,
+        prompt=full_prompt,
+        noise=noise,
+        seed=seed,
+        duration=len(stem) / SAMPLE_RATE,
+        n_bars=target_bars,
+    )
+    session.save_stem(result)
+    return result
 
 
 def mix(session: Session, parts: list[Part], include_vocal: bool = True) -> np.ndarray:
