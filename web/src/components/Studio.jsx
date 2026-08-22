@@ -40,7 +40,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 
 export default function Studio({
   engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
-  onGenerateStem, onGenerateFromReference,
+  onGenerateStem, onGenerateFromReference, sessionId,
 }) {
   const {
     tracks,
@@ -316,7 +316,7 @@ export default function Studio({
     // parser only if the request itself fails.
     let plan;
     try {
-      plan = await apiClient.interpret(text);
+      plan = await apiClient.interpret(text, sessionId);
     } catch {
       const { parts, style } = parseRequest(text);
       plan = { tracks: parts.map((part) => ({ part, style: '' })), style, notes: '' };
@@ -337,7 +337,10 @@ export default function Studio({
     try {
       for (const [i, spec] of plan.tracks.entries()) {
         const part = spec.part;
-        const style = [plan.style, spec.style].filter(Boolean).join(', ');
+        // Send the style only when this request actually carries one. Sending
+        // an empty string would re-pin the arrangement to "no style" and
+        // reset the groove for every part added afterwards.
+        const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
         setStatus(`Generating ${part} (${i + 1}/${plan.tracks.length})…`);
         // Sequential on purpose: the local model is a single instance, so
         // parallel requests would only contend for it.

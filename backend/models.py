@@ -82,6 +82,32 @@ class Analysis:
 
 
 @dataclass
+class Arrangement:
+    """Session-wide musical decisions that every part must share.
+
+    Without this, each generation re-derived its own groove from whatever
+    style text that one request happened to carry. Adding a piano to a
+    finished bossa arrangement re-derived "straight" from an empty style
+    and dropped a rock backbeat on top of it — the parts were generated
+    against different rhythmic grids, so they could not cohere no matter
+    how good each one sounded alone.
+
+    Tempo, key and chords live on the Analysis; this is everything else
+    the parts have to agree on.
+    """
+
+    style: str = ""  # genre and mood, e.g. "bossa nova"
+    bars: int | None = None  # length every part is generated at
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Arrangement":
+        return cls(**d) if d else cls()
+
+
+@dataclass
 class StemResult:
     """One generated backing stem, plus the provenance to reproduce it."""
 

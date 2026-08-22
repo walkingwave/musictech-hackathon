@@ -39,7 +39,7 @@ app = FastAPI(title="Backing Track Generator")
 class GenerateRequest(BaseModel):
     session_id: str
     part: str
-    style: str = ""
+    style: str | None = None  # None -> inherit the session's arrangement
     noise: float | None = None  # None -> per-part default
     backend: str | None = None
     seed: int | None = None
@@ -158,18 +158,46 @@ def generate(request: GenerateRequest) -> dict:
 
 class InterpretRequest(BaseModel):
     text: str
+    session_id: str | None = None
 
 
 @app.post("/api/interpret")
 def interpret_request(request: InterpretRequest) -> dict:
     """Turn a plain-English request into a generation plan.
 
+    When a session is given, its style, tempo, key and existing parts are
+    passed as context so a follow-up ("add a piano") extends the current
+    arrangement instead of starting a conflicting one.
+
     Uses Claude when credentials are available and falls back to keyword
     matching otherwise, so this endpoint always returns a usable plan
     rather than failing when offline.
     """
-    plan = interpret.interpret(request.text)
+    context = None
+    if request.session_id:
+        try:
+            session = Session.load(request.session_id)
+            analysis = session.analysis
+            arrangement = session.arrangement
+            context = interpret.Context(
+                style=arrangement.style,
+                bars=arrangement.bars,
+                bpm=analysis.bpm,
+                key=analysis.key,
+                mode=analysis.mode,
+                existing_parts=list(session.to_dict().get("stems", {})),
+            )
+        except (FileNotFoundError, ValueError):
+            context = None  # unanalyzed or missing session - no context to add
+
+    plan = interpret.interpret(request.text, context)
     return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
+
+
+@app.get("/api/session/{session_id}/arrangement")
+def get_arrangement(session_id: str) -> dict:
+    """The style and length every part in this session shares."""
+    return _load(session_id).arrangement.to_dict()
 
 
 class BlankSessionRequest(BaseModel):

@@ -41,7 +41,8 @@ export const createBlankSession = (body) => postJSON('/session/blank', body);
 // Interpret a plain-English request into a generation plan. The server uses
 // Claude when it has credentials and falls back to keyword matching, so this
 // always returns a plan rather than failing.
-export const interpret = (text) => postJSON('/interpret', { text });
+export const interpret = (text, sessionId) =>
+  postJSON('/interpret', { text, session_id: sessionId ?? null });
 
 // Generate a clip guided by audio the user picked, rather than by a guide
 // track synthesized from the chord grid. `referenceWav` is a Blob.

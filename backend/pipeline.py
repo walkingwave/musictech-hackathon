@@ -16,10 +16,10 @@ import random
 import numpy as np
 import soundfile as sf
 
-from . import align, arrange, config, prompts, render_guide, sa3_backend
+from . import align, arrange, config, grooves, prompts, render_guide, sa3_backend
 from .analysis import analyze
 from .config import SAMPLE_RATE
-from .models import Analysis, Bar, Part, StemResult
+from .models import Analysis, Arrangement, Bar, Part, StemResult
 from .session import Session
 from .theory import note_to_pitch_class, pitch_class_to_note
 
@@ -79,10 +79,49 @@ def _extend_analysis(analysis: Analysis, target_bars: int, start_bar: int) -> An
     )
 
 
+def _resolve_arrangement(
+    session: Session,
+    style: str | None,
+    bars: int | None,
+    analysis: Analysis,
+) -> tuple[str, int]:
+    """Settle the style and length this part must share with the others.
+
+    Inherit whatever the session already agreed on; anything passed
+    explicitly wins and is written back, so a later change of mind moves
+    the whole arrangement instead of leaving one part out of step.
+    """
+    arrangement = session.arrangement
+    changed = False
+
+    if style is None:
+        style = arrangement.style
+    elif style != arrangement.style:
+        arrangement.style = style
+        changed = True
+
+    if bars is None:
+        # Fall back to the analysed length, so the first part sets the
+        # length and every later part matches it.
+        bars = arrangement.bars or len(analysis.bars) or 8
+    if bars != arrangement.bars:
+        arrangement.bars = bars
+        changed = True
+
+    if changed:
+        session.save_arrangement(arrangement)
+        log.info(
+            "arrangement: style=%r groove=%s bars=%d",
+            style, grooves.for_style(style).name, bars,
+        )
+
+    return style, bars
+
+
 def generate_stem(
     session: Session,
     part: Part,
-    style: str = "",
+    style: str | None = None,
     noise: float | None = None,
     backend: str | None = None,
     seed: int | None = None,
@@ -95,6 +134,12 @@ def generate_stem(
     carries the rhythm and harmony through the model's noised latent, so
     what comes back has the right skeleton and a real instrument's timbre.
 
+    `style` and `bars` default to the session's arrangement, so a part
+    added later shares the groove and length of the parts already there.
+    Passing either explicitly overrides it *and* re-pins the arrangement,
+    which is what makes "actually, make it reggae" change the whole
+    session rather than producing one reggae part among bossa ones.
+
     `noise` defaults per part - see config.PART_NOISE.
     """
     analysis = session.analysis
@@ -102,9 +147,11 @@ def generate_stem(
     seed = seed if seed is not None else random.randint(0, 2**31 - 1)
     noise = noise if noise is not None else config.default_noise(part)
 
+    style, bars = _resolve_arrangement(session, style, bars, analysis)
+
     # A longer target length (or a section offset) works over a tiled copy of
     # the chord grid; the original vocal analysis stays untouched on disk.
-    work = analysis if bars is None else _extend_analysis(analysis, bars, start_bar)
+    work = _extend_analysis(analysis, bars, start_bar)
 
     # Stage 2: notes on the grid.
     midi = arrange.arrange(part, work, vocal, sr, style=style)

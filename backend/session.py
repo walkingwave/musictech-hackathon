@@ -24,7 +24,7 @@ import numpy as np
 import soundfile as sf
 
 from .config import SAMPLE_RATE, SESSIONS_DIR
-from .models import Analysis, StemResult
+from .models import Analysis, Arrangement, StemResult
 
 
 @dataclass
@@ -104,6 +104,16 @@ class Session:
     def save_analysis(self, analysis: Analysis) -> None:
         meta = self._read_meta()
         meta["analysis"] = analysis.to_dict()
+        self._write_meta(meta)
+
+    @property
+    def arrangement(self) -> Arrangement:
+        """Session-wide style and length. Empty until the first generation."""
+        return Arrangement.from_dict(self._read_meta().get("arrangement"))
+
+    def save_arrangement(self, arrangement: Arrangement) -> None:
+        meta = self._read_meta()
+        meta["arrangement"] = arrangement.to_dict()
         self._write_meta(meta)
 
     def save_stem(self, result: StemResult) -> None:

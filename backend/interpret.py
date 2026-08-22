@@ -80,13 +80,47 @@ Rules:
 """
 
 
-def interpret(text: str) -> Plan:
-    """Best available interpretation of `text`, never raising."""
+class Context(BaseModel):
+    """What is already in the session, so additions match it."""
+
+    style: str = ""
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    bars: int | None = None
+    existing_parts: list[str] = Field(default_factory=list)
+
+    def describe(self) -> str:
+        if not (self.style or self.existing_parts):
+            return ""
+        lines = ["The session already contains:"]
+        if self.existing_parts:
+            lines.append(f"- parts: {', '.join(self.existing_parts)}")
+        if self.style:
+            lines.append(f"- style: {self.style}")
+        if self.bpm:
+            lines.append(f"- tempo: {round(self.bpm)} BPM")
+        if self.key:
+            lines.append(f"- key: {self.key} {self.mode or ''}".strip())
+        lines.append(
+            "Unless the user is explicitly changing them, keep style, tempo and key "
+            "as they are and return only the NEW parts to add. Everything must sit "
+            "in the same arrangement as what is already there."
+        )
+        return "\n".join(lines)
+
+
+def interpret(text: str, context: Context | None = None) -> Plan:
+    """Best available interpretation of `text`, never raising.
+
+    `context` describes the existing session so that a follow-up request
+    adds to the arrangement rather than starting a conflicting one.
+    """
     try:
-        return _interpret_with_claude(text)
+        return _interpret_with_claude(text, context)
     except Exception as error:  # noqa: BLE001 - any failure falls back to rules
         log.info("falling back to keyword parsing: %s", error)
-        return _interpret_with_rules(text)
+        return _interpret_with_rules(text, context)
 
 
 def claude_available() -> bool:
@@ -111,14 +145,18 @@ def claude_available() -> bool:
     return (config_dir / "credentials").is_dir()
 
 
-def _interpret_with_claude(text: str) -> Plan:
+def _interpret_with_claude(text: str, context: Context | None) -> Plan:
     import anthropic
+
+    system = SYSTEM
+    if context and (described := context.describe()):
+        system = f"{SYSTEM}\n\n{described}"
 
     client = anthropic.Anthropic()
     response = client.messages.parse(
         model=MODEL,
         max_tokens=2048,
-        system=SYSTEM,
+        system=system,
         messages=[{"role": "user", "content": text}],
         output_format=Plan,
     )
@@ -161,7 +199,7 @@ PART_WORDS = {
 EVERYTHING = ("full band", "whole band", "everything", "full arrangement")
 
 
-def _interpret_with_rules(text: str) -> Plan:
+def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
     lower = f" {text.lower()} "
 
     if any(phrase in lower for phrase in EVERYTHING):
@@ -169,8 +207,18 @@ def _interpret_with_rules(text: str) -> Plan:
     else:
         parts = [p for p in PARTS if any(w in lower for w in PART_WORDS[p])]
 
+    # Don't regenerate parts the session already has.
+    if context and context.existing_parts:
+        parts = [p for p in parts if p not in context.existing_parts]
+
     groove = grooves.for_style(lower)
     style = groove.name if groove.name != "straight" else ""
+
+    # A request with no genre of its own inherits the session's, so an
+    # "add a piano" cannot silently reset the groove to straight.
+    if groove.name == "straight" and context and context.style:
+        style = context.style
+        groove = grooves.for_style(style)
 
     return Plan(
         tracks=[TrackSpec(part=p, style="") for p in parts],
