@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
+import { audioBufferToWav } from '../wav.js';
 
 // Timeline studio (light, on-brand) with the controls a basic DAW needs:
 // grid, zoom, adjustable snap (incl. off-grid), a move / split / range tool,
@@ -555,16 +556,14 @@ function ClipInspector({
 
   const isPart = track.kind !== 'audio';
   const download = () => {
-    import('../wav.js').then(({ audioBufferToWav }) => {
-      if (!buffer) return;
-      const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
-      const url = URL.createObjectURL(wav);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${track.name}.wav`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+    if (!buffer) return;
+    const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
+    const url = URL.createObjectURL(wav);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${track.name}.wav`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
   const regionBars = region ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar)) : 0;
 

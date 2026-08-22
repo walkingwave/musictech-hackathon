@@ -99,9 +99,18 @@ document.getElementById('record').onclick = async () => {
   const chunks = [];
   recorder = new MediaRecorder(stream);
   recorder.ondataavailable = (event) => chunks.push(event.data);
-  recorder.onstop = () => {
+  recorder.onstop = async () => {
     stream.getTracks().forEach((track) => track.stop());
-    submitVocal(new Blob(chunks, { type: recorder.mimeType }), 'recording.webm');
+
+    // Convert before upload. MediaRecorder produces WebM/Opus or MP4/AAC
+    // depending on the browser, and the backend's decoder reads neither.
+    const recorded = new Blob(chunks, { type: recorder.mimeType });
+    try {
+      submitVocal(await blobToWav(recorded), 'recording.wav');
+    } catch (error) {
+      toast(`Could not decode the recording — ${error.message}`);
+      setStatus('');
+    }
   };
 
   recorder.start();
@@ -110,9 +119,17 @@ document.getElementById('record').onclick = async () => {
   setStatus('Recording — sing or hum a melody');
 };
 
-document.getElementById('upload').onchange = (event) => {
+document.getElementById('upload').onchange = async (event) => {
   const file = event.target.files[0];
-  if (file) submitVocal(file, file.name);
+  if (!file) return;
+
+  // Normalize uploads too, not just recordings. Phone voice memos are
+  // m4a/AAC, which the backend's decoder cannot read either.
+  try {
+    submitVocal(await blobToWav(file), 'upload.wav');
+  } catch (error) {
+    toast(`Could not decode ${file.name} — ${error.message}`);
+  }
 };
 
 async function submitVocal(blob, filename) {
