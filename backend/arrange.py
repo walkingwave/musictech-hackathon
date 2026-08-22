@@ -21,7 +21,7 @@ from .models import Analysis, Part
 from .theory import chord_to_midi, parse_chord, transpose_diatonic
 
 # General MIDI program numbers, so exported MIDI opens with sane sounds.
-GM_PROGRAMS = {"bass": 33, "piano": 0, "guitar": 25, "harmony": 52}
+GM_PROGRAMS = {"bass": 33, "piano": 0, "guitar": 25, "harmony": 52, "free": 89}
 # finger bass, grand piano, steel acoustic guitar, choir aahs
 
 # General MIDI percussion note numbers.
@@ -121,6 +121,22 @@ def _comp(
     return midi
 
 
+def _arrange_free(analysis: Analysis, vocal: np.ndarray, sr: int, groove: Groove):
+    """A sustained chord bed - harmony and tempo only, no groove.
+
+    Every other arranger encodes how its instrument plays. This one
+    deliberately does not: one held triad per bar gives Stable Audio 3 the
+    key and the bar grid to follow while leaving the rhythm entirely to the
+    prompt. It is what lets an instrument we know nothing about still come
+    back in time and in key.
+    """
+    midi, instrument = _new_midi(analysis, "free")
+    for bar in analysis.bars:
+        for pitch in chord_to_midi(bar.chord, octave=3):
+            _add(instrument, pitch, bar.start, bar.end, velocity=70)
+    return midi
+
+
 def _arrange_piano(analysis, vocal, sr, groove):
     return _comp(analysis, groove, "piano", octave=4, velocity=75)
 
@@ -193,4 +209,5 @@ ARRANGERS = {
     "guitar": _arrange_guitar,
     "drums": _arrange_drums,
     "harmony": _arrange_harmony,
+    "free": _arrange_free,
 }

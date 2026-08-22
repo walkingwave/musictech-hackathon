@@ -12,8 +12,14 @@ from typing import Literal
 
 # The four backing parts we generate. Adding a part means: add it here,
 # add an arranger in arrange.py, and add a prompt template in prompts.py.
-Part = Literal["bass", "piano", "guitar", "drums", "harmony"]
-PARTS: tuple[Part, ...] = ("bass", "piano", "guitar", "drums", "harmony")
+Part = Literal["bass", "piano", "guitar", "drums", "harmony", "free"]
+PARTS: tuple[Part, ...] = ("bass", "piano", "guitar", "drums", "harmony", "free")
+
+# `free` is the role for "just generate what I asked for". Its guide is a
+# plain sustained chord bed, so the output inherits tempo, key and harmony
+# from the session but nothing about how the instrument should play. Use it
+# whenever the instrument is unknown: guessing a specific role imposes a
+# rhythm the user never asked for, which is worse than imposing none.
 
 
 @dataclass

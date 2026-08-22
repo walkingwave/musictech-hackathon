@@ -26,6 +26,9 @@ INSTRUMENT_PHRASES: dict[Part, str] = {
     "guitar": "clean electric guitar chords, warm amp, light room",
     "drums": "tight acoustic drum kit, punchy kick and snare, dry room",
     "harmony": "warm choir pad, sustained aahs, soft attack, close-miked",
+    # `free` always carries a user-supplied instrument, so it needs no
+    # default of its own - and inventing one would compete with theirs.
+    "free": "",
 }
 
 # What must not appear in the stem. Everything except the target part.
@@ -35,6 +38,7 @@ ISOLATION: dict[Part, str] = {
     "guitar": "solo guitar only, no drums, no vocals, no bass",
     "drums": "drums only, no melody, no vocals, no bass",
     "harmony": "single sustained layer, no drums, no bass, no percussion",
+    "free": "solo instrument, one layer only, no drums, no vocals",
 }
 
 

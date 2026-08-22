@@ -18,7 +18,7 @@ from .config import SAMPLE_RATE
 
 # Per-part oscillator choice. Sawtooth has more harmonics for the model to
 # latch onto; sine is cleaner for parts where pitch clarity matters more.
-WAVEFORMS = {"bass": "saw", "piano": "saw", "harmony": "sine"}
+WAVEFORMS = {"bass": "saw", "piano": "saw", "guitar": "saw", "harmony": "sine", "free": "sine"}
 
 # Attack/release in seconds. Short ramps prevent clicks at note edges.
 ATTACK = 0.005

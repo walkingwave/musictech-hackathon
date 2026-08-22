@@ -292,17 +292,30 @@ FILLER = re.compile(
 )
 
 
-def _role_for(phrase: str) -> str:
-    """Guess which guide an unknown instrument should follow.
+# Passing an unrecognised phrase through as an instrument is right when the
+# user is clearly asking for one, and wrong otherwise: "something moody and
+# slower" is a description of the arrangement, and turning it into two
+# tracks called "something moody" and "slower" is worse than doing nothing.
+# Without a verb like this, the fallback only accepts instruments it knows.
+ADD_INTENT = re.compile(
+    r"\b(?:add|another|more|extra|include|layer|throw in|put in|give me|"
+    r"i want|i need|with a|with an)\b"
+)
 
-    Defaults to `piano`, the chordal role: it is the least wrong choice for
-    an arbitrary pitched instrument, and unlike bass or drums it neither
-    doubles the low end nor produces unpitched noise.
+
+def _role_for(phrase: str) -> str:
+    """Which guide an unknown instrument should follow.
+
+    Falls back to `free` — a plain chord bed — rather than guessing a
+    specific role. Routing an unrecognised instrument to `piano` does not
+    just fail to help, it actively imposes block-chord comping on something
+    that may play nothing like a piano. A neutral bed gives the output the
+    key and the bar grid and leaves everything else to the prompt.
     """
     for part, hints in ROLE_HINTS:
         if any(h in phrase for h in hints):
             return part
-    return "piano"
+    return "free"
 
 
 def _split_requests(text: str) -> list[str]:
@@ -314,7 +327,37 @@ def _split_requests(text: str) -> list[str]:
     """
     text = re.sub(r"\b(?:in|with)\s+(?:a|an|the)?\s*[\w\s-]*\bstyle\b", " ", text)
     parts = re.split(r"[,:;]|\band\b|\bplus\b|/|&|\n", text.lower())
-    return [p.strip(" .!?") for p in parts if p.strip()]
+
+    # A fragment can still name several instruments with no separator at all
+    # ("piano drums guitar bossa nova"). Split those on the instrument names
+    # themselves, or the whole run becomes one track.
+    out: list[str] = []
+    for fragment in parts:
+        fragment = fragment.strip(" .!?")
+        if fragment:
+            out.extend(_split_run(fragment))
+    return out
+
+
+def _split_run(fragment: str) -> list[str]:
+    """Break a separator-less run of known instrument names into fragments."""
+    hits = []
+    for word in sorted(INSTRUMENTS, key=len, reverse=True):
+        for match in re.finditer(rf"\b{re.escape(word)}\b", fragment):
+            if not any(a <= match.start() < b for a, b, _ in hits):
+                hits.append((match.start(), match.end(), word))
+    if len(hits) < 2:
+        return [fragment]
+
+    hits.sort()
+    pieces, cursor = [], 0
+    for start, end, _ in hits:
+        # Keep any adjectives sitting between the previous name and this one.
+        pieces.append(fragment[cursor:end].strip())
+        cursor = end
+    if (tail := fragment[cursor:].strip()):
+        pieces[-1] = f"{pieces[-1]} {tail}".strip()
+    return [p for p in pieces if p]
 
 
 def _clean_instrument(fragment: str) -> str:
@@ -347,19 +390,23 @@ def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
         tracks = [TrackSpec(part=p, name=p, instrument="") for p in DEFAULT_BAND]
         return Plan(tracks=tracks, style=style, groove=groove.name)
 
+    passthrough = bool(ADD_INTENT.search(lower))
+
     tracks: list[TrackSpec] = []
     for fragment in _split_requests(text):
-        phrase = _clean_instrument(fragment)
-        if not phrase or phrase == style or phrase in groove.keywords:
+        phrase = _clean_instrument(_strip_style(fragment, groove))
+        if not phrase or phrase == style:
             continue
 
         known = _lookup(phrase)
         if known:
             part, instrument, name = known
-        else:
-            # Unknown to us, but the user still asked for it. Their words
+        elif passthrough:
+            # Unknown to us, but the user clearly asked for it. Their words
             # become the prompt verbatim; we only guess the guide to follow.
             part, instrument, name = _role_for(phrase), phrase, phrase
+        else:
+            continue
 
         tracks.append(
             TrackSpec(
@@ -375,6 +422,18 @@ def _interpret_with_rules(text: str, context: Context | None = None) -> Plan:
         groove=groove.name,
         notes="" if tracks else "Name the instruments you want, e.g. 'bass, drums and a Rhodes'.",
     )
+
+
+def _strip_style(fragment: str, groove) -> str:
+    """Remove genre words from an instrument fragment.
+
+    The genre is already extracted into the arrangement's style, so leaving
+    it attached here would name the track "guitar-bossa-nova" and push the
+    words into the instrument description twice.
+    """
+    for word in sorted(groove.keywords, key=len, reverse=True):
+        fragment = re.sub(rf"\b{re.escape(word)}\b", " ", fragment)
+    return re.sub(r"\s+", " ", fragment).strip()
 
 
 def _lookup(phrase: str) -> tuple[str, str, str] | None:
@@ -398,7 +457,11 @@ def _lookup(phrase: str) -> tuple[str, str, str] | None:
             described = ", ".join(filter(None, [instrument or word, extra]))
             return part, described, phrase
 
-    close = difflib.get_close_matches(phrase, INSTRUMENTS, n=1, cutoff=0.8)
+    # 0.7, not the more cautious 0.8: real typos land lower than expected
+    # ("tompany" -> "timpani" is only 0.71), and a miss here is worse than a
+    # wrong guess — an unmatched phrase still generates, just with a
+    # meaningless prompt and a guessed role.
+    close = difflib.get_close_matches(phrase, INSTRUMENTS, n=1, cutoff=0.7)
     if close:
         part, instrument = INSTRUMENTS[close[0]]
         return part, instrument or close[0], close[0]
