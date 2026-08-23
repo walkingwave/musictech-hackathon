@@ -97,10 +97,12 @@ BPM, key, downbeat, chords, melody notes, and MIDI pitches:
 uv run analysis-test --input samples/fixtures/amin_100.wav
 uv run analysis-test --input samples/fixtures/amin_100.wav --output analysis-tests/amin-check
 uv run analysis-test --input samples/beatbox.wav --mode beatbox
+uv run analysis-test --clean  # remove previous analysis-test runs
 ```
 
-The default output directory is `analysis-tests/<run-id>/`. The preprocessing
-is deliberately conservative: it removes DC, trims only outer silence, applies
+The default output directory is a sortable timestamp such as
+`analysis-tests/2026-08-22_16-43-09/`. The preprocessing is deliberately
+conservative: it removes DC, trims only outer silence, applies
 a content-aware high-pass filter, and normalizes with headroom. Use
 `--no-trim` or `--no-high-pass` when comparing their effect on analysis.
 
