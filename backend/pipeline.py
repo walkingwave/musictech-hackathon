@@ -788,6 +788,7 @@ def generate_song(
     backend: str | None = None,
     seed: int | None = None,
     bars: int | None = None,
+    description: str | None = None,
 ) -> list[StemResult]:
     """Master-first generation: one record, then carve the stems out of it.
 
@@ -807,6 +808,13 @@ def generate_song(
     style, bars, production, tone_seed = _resolve_arrangement(
         session, style, bars, analysis, production, seed
     )
+    # A master-first song is one generation plus a full separation pass, and
+    # both degrade with length: past ~16 bars the model loses the plot on
+    # long-form structure and the CPU separation takes many minutes. The
+    # agent sometimes asks for 32 bars on its own ("with solos"); cap it.
+    if bars and bars > 16:
+        log.info("clamping song from %d to 16 bars", bars)
+        bars = 16
     seed = seed if seed is not None else tone_seed
     work = _extend_analysis(analysis, bars, 0)
 
@@ -832,7 +840,34 @@ def generate_song(
     if peak > 0:
         master_guide = master_guide * (0.8 / peak)
     band = ", ".join(t.get("instrument") or t.get("name") or t["part"] for t in tracks)
-    master_prompt = prompts.build("mix", work, style, band, production)
+    # The user's own words lead the prompt. The plan is the agent's
+    # paraphrase — useful for structure, but the paraphrase drifting from
+    # the request is exactly what "the generation doesn't match my prompt"
+    # sounds like. What they typed is the most accurate description of what
+    # they want, so it goes first, where the model weighs text heaviest.
+    lead = (description or "").strip()
+    # Strip instruction framing: SA3 reads tags, not instructions.
+    lead = re.sub(
+        r"^(please\s+)?(can you\s+)?(make|generate|create|give|write|play|produce)"
+        r"(\s+me)?(\s+(a|an|some))?\s+",
+        "",
+        lead,
+        flags=re.IGNORECASE,
+    )
+    # Strip track-count and meta words. "4 track jazz" reads to the model as
+    # the SOUND of a four-track cassette recorder — tape-crushed lo-fi — and
+    # a request for four tracks of jazz came back deep-fried. "track", "song"
+    # and "stems" describe the request, never the audio.
+    lead = re.sub(
+        r"\d+\s*[- ]?\s*(different\s+|separate\s+|new\s+)?(tracks?|instruments?|stems?|parts?)",
+        "", lead, flags=re.IGNORECASE,
+    )
+    # "beat drop" is a sound and survives; a bare "beat" is a request noun.
+    lead = re.sub(r"(tracks?|songs?|stems?)|beats?(?!\s*drop)", "", lead, flags=re.IGNORECASE)
+    lead = re.sub(r"\s*,\s*,+", ", ", lead)
+    lead = re.sub(r"\s{2,}", " ", lead).strip(" ,")
+    described = ", ".join(piece for piece in (lead, band) if piece)
+    master_prompt = prompts.build("mix", work, style, described, production)
     log.info("master [%s] seed=%d bars=%d", master_prompt, seed, len(work.bars))
 
     _progress(session.id, "Recording the master take…")

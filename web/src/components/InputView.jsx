@@ -3,14 +3,6 @@ import Section from './Section.jsx';
 import Recorder from './Recorder.jsx';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-// Backend parts, with display labels matching the mockup's chip language.
-const STEMS = [
-  { id: 'bass', label: 'Bass' },
-  { id: 'drums', label: 'Drums' },
-  { id: 'piano', label: 'Piano' },
-  { id: 'harmony', label: 'Harmony' },
-];
-
 export default function InputView({
   analysis,
   pitchTracking,
@@ -18,8 +10,6 @@ export default function InputView({
   backends,
   backend,
   onBackend,
-  prompt,
-  onPrompt,
   target,
   onTarget,
   bars,
@@ -30,13 +20,19 @@ export default function InputView({
 }) {
   return (
     <div className="view">
-      <Section num="01" title="Hum Input" meta="ONE CLEAR VOICE">
+      <Section num="01" title="Your Melody" meta="HUM · SING · WHISTLE">
         <Recorder onSubmit={onSubmitVocal} fileName={fileName} />
-      </Section>
-
-      <Section num="02" title="MIDI Transformation" meta="EDITABLE NOTES">
-        <p className="help">Hum one unaccompanied line; Melody preserves detected notes while Bassline intentionally rearranges them.</p>
-        {pitchTracking && <p className="help">{pitchTracking.note_count} detected notes · {pitchTracking.tracker_id}{pitchTracking.diagnostics?.warnings?.length ? ` · ${pitchTracking.diagnostics.warnings[0]}` : ''}</p>}
+        <p className="help">
+          Record or upload one unaccompanied line — a hum, a whistle, a sung
+          phrase. It becomes editable notes you can reshape in the studio.
+        </p>
+        {pitchTracking && (
+          <p className="help">
+            {pitchTracking.note_count > 1
+              ? `Heard ${pitchTracking.note_count} notes.`
+              : 'Couldn’t hear a clear melody — try again closer to the mic, one note at a time.'}
+          </p>
+        )}
       </Section>
 
       {analysis && (
@@ -94,7 +90,7 @@ function Settings({
 
   return (
     <>
-      <Section num="03" title="Settings" meta="Detected From Source">
+      <Section num="02" title="Shape It" meta="Detected — adjust if it heard wrong">
         <div className="settings">
           <div className="field">
             <span className="field-label">
@@ -132,9 +128,9 @@ function Settings({
 
 
           <div className="field divide">
-            <span className="field-label">Transform Hum Into</span>
+            <span className="field-label">Turn It Into</span>
             <div className="chips">
-              {[{ id: 'melody', label: 'Melody' }, { id: 'bass', label: 'Bassline' }].map((option) => (
+              {[{ id: 'melody', label: 'The melody I hummed' }, { id: 'bass', label: 'A bassline from it' }].map((option) => (
                 <button
                   key={option.id}
                   type="button"
@@ -151,8 +147,8 @@ function Settings({
         <div className="field" style={{ marginTop: '1.4rem' }}>
           {target === 'melody' && (
             <div className="row" style={{ marginBottom: '0.8rem' }}>
-              <label><input type="checkbox" checked={snapToKey} onChange={(e) => setSnapToKey(e.target.checked)} /> Snap pitches to key</label>
-              <label><input type="checkbox" checked={quantize} onChange={(e) => setQuantize(e.target.checked)} /> Quantize timing</label>
+              <label><input type="checkbox" checked={snapToKey} onChange={(e) => setSnapToKey(e.target.checked)} /> Keep it in key</label>
+              <label><input type="checkbox" checked={quantize} onChange={(e) => setQuantize(e.target.checked)} /> Snap timing to the beat</label>
             </div>
           )}
           <span className="field-label">Chords · One Per Bar</span>
@@ -180,11 +176,11 @@ function Settings({
           disabled={generating}
           onClick={generate}
         >
-          {generating ? 'Transforming…' : 'Transform Hum to MIDI'}
+          {generating ? 'Listening…' : 'Write the Notes'}
         </button>
         <p>
-          Melody defaults to faithful detected pitch and timing. Key snapping and
-          quantization are optional; Bassline intentionally reinterprets the hum.
+          Your melody is kept exactly as sung unless you turn on the fixes
+          above. A bassline reinterprets it — same bones, lower and simpler.
         </p>
       </div>
     </>

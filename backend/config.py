@@ -117,6 +117,9 @@ STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 # accepts 'stable-audio-2.5' | 'stable-audio-2', so pointing at it silently
 # generates with 2.5 no matter what the UI calls the backend.
 STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio/audio-to-audio"
+# Same family, no input audio: used for instrument sampling, which generates
+# single notes from the prompt alone.
+STABILITY_TEXT_URL = "https://api.stability.ai/v2beta/audio/stable-audio/text-to-audio"
 
 # The only value that endpoint accepts today, sent explicitly so a future
 # default flipping under us shows up as an error rather than a quiet downgrade.

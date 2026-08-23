@@ -424,6 +424,8 @@ export default function Studio({
         setStatus(`Recording the band (${audioSpecs.length} parts)…`);
         const stems = await onGenerateSong({
           onProgress: setStatus,
+          // The words the user actually typed — they lead the master prompt.
+          description: text,
           tracks: audioSpecs.map((spec, i) => ({
             part: spec.part,
             name: spec.name,

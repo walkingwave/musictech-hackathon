@@ -304,6 +304,9 @@ class SongRequest(BaseModel):
     backend: str | None = None
     seed: int | None = None
     bars: int | None = None
+    # The user's request verbatim, so the master is generated from their
+    # words rather than only the agent's paraphrase of them.
+    description: str | None = None
 
 
 
@@ -343,6 +346,7 @@ def generate_song(request: SongRequest) -> dict:
                 backend=request.backend,
                 seed=request.seed,
                 bars=request.bars,
+                description=request.description,
             )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error

@@ -370,12 +370,40 @@ class StabilityAPIBackend:
 
     def generate(self, prompt, init_audio, noise, duration, seed):
         cache_key = _cache_key(prompt, init_audio, noise, duration, seed)
-        if init_audio is None:
-            raise RuntimeError("the hosted endpoint requires a guide track")
         cached = config.CACHE_DIR / f"{cache_key}.wav"
-        if cached.exists():
+        # A None seed means "give me a different take each time"; serving a
+        # cached one would return the identical audio for every take.
+        if seed is not None and cached.exists():
             log.info("api cache hit %s", cache_key[:8])
             audio, _ = sf.read(cached, dtype="float32")
+            return _to_mono_numpy(audio)
+
+        # No guide means text-to-audio. Instrument sampling depends on this:
+        # it generates from the prompt alone, and when this path raised
+        # instead, the silent fallback landed on mock — so every "generated
+        # instrument" was actually white noise, not Stable Audio.
+        if init_audio is None:
+            fields = {
+                "model": (None, config.STABILITY_MODEL),
+                "prompt": (None, prompt),
+                "duration": (None, str(min(int(duration), config.STABILITY_MAX_DURATION))),
+                # Sample takes pass seed=None to mean "vary": honour it with
+                # a fresh seed instead of crashing on int(None).
+                "seed": (None, str(max(0, int(seed))) if seed is not None
+                         else str(int(np.random.default_rng().integers(0, 2**31)))),
+                "output_format": (None, "wav"),
+            }
+            response = httpx.post(
+                config.STABILITY_TEXT_URL,
+                headers=self._headers("audio/*"),
+                files=fields,  # multipart text fields; the endpoint requires multipart
+                timeout=180.0,
+            )
+            response.raise_for_status()
+            audio_bytes = self._resolve(response)
+            config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(audio_bytes)
+            audio, _ = sf.read(io.BytesIO(audio_bytes), dtype="float32")
             return _to_mono_numpy(audio)
 
         wav_bytes = io.BytesIO()
@@ -554,7 +582,7 @@ def _error_summary(error: Exception) -> str:
 def _cache_key(prompt: str, init_audio: np.ndarray, noise: float, duration: float, seed: int) -> str:
     digest = hashlib.sha256()
     digest.update(prompt.encode())
-    digest.update(init_audio.tobytes())
+    digest.update(b"text-to-audio" if init_audio is None else init_audio.tobytes())
     digest.update(f"{noise}|{duration}|{seed}".encode())
     # The model is part of the request, so it has to be part of the key -
     # otherwise everything cached from the old 2.5 endpoint would be replayed

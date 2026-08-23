@@ -366,7 +366,7 @@ export default function App() {
   // stems come back carved out of that master. Used by the prompt bar for
   // multi-track plans so the parts are one performance split apart.
   const generateSongStems = useCallback(
-    async ({ tracks, style, production, bars: songBars, onProgress }) => {
+    async ({ tracks, style, production, bars: songBars, description, onProgress }) => {
       const id = await ensureSession();
       // The song pipeline runs minutes inside one request; poll its live
       // stage so the wait reads as progress rather than a hang.
@@ -387,6 +387,7 @@ export default function App() {
           style,
           production,
           bars: songBars,
+          description,
           backend,
         });
         (result.stems || []).forEach(warnOnFallback);
@@ -631,8 +632,6 @@ export default function App() {
           backends={backends}
           backend={backend}
           onBackend={selectBackend}
-          prompt={prompt}
-          onPrompt={setPrompt}
           target={humTarget}
           onTarget={setHumTarget}
           bars={bars}

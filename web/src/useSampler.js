@@ -55,9 +55,13 @@ export function useSampler() {
     [context],
   );
 
-  // Resolve the prompt to samples: a real soundfont when the prompt names
-  // an instrument, generated one-shots when it does not (or when the
-  // soundfont cannot be fetched — offline, say).
+  // Resolve an instrument to samples. Routed by IDENTITY, not by prompt:
+  // factory instruments (id "f-…") are stock sounds and load their soundfont,
+  // never costing a generation; an instrument the user created by describing
+  // it is the whole point of describing it — it is generated through Stable
+  // Audio even when the description happens to name a GM instrument.
+  // Soundfonts remain the fallback either way, so an offline demo or a failed
+  // generation still makes sound.
   const load = useCallback(
     async (instrument, { backend } = {}) => {
       if (!instrument?.prompt) throw new Error('this instrument has no description');
@@ -67,14 +71,24 @@ export function useSampler() {
       try {
         let entry = null;
         const gm = matchPrompt(instrument.prompt);
-        if (gm) {
+        const isFactory = String(instrument.id || '').startsWith('f-');
+
+        if (isFactory && gm) {
           try {
             entry = { type: 'soundfont', gm, buffers: await loadSoundfont(gm, context()) };
           } catch (error) {
             console.warn(`soundfont ${gm} unavailable, generating instead:`, error);
           }
         }
-        if (!entry) entry = await loadGenerated(instrument, backend);
+        if (!entry) {
+          try {
+            entry = await loadGenerated(instrument, backend);
+          } catch (error) {
+            if (!gm) throw error;
+            console.warn('generation failed, falling back to soundfont:', error);
+            entry = { type: 'soundfont', gm, buffers: await loadSoundfont(gm, context()) };
+          }
+        }
 
         loadedRef.current.set(instrument.id, entry);
         return entry;
@@ -105,6 +119,28 @@ export function useSampler() {
     );
   };
 
+
+  // Sample recordings arrive at whatever level they were captured at —
+  // soundfont notes often peak around 0.2 — while generated stems play near
+  // full scale, so MIDI tracks sounded buried. Per-buffer makeup gain
+  // normalises each sample toward a common peak. Cached per buffer; capped
+  // so a near-silent sample is not boosted into audible noise.
+  const makeupRef = useRef(new WeakMap());
+  const makeupFor = (buffer) => {
+    const cache = makeupRef.current;
+    let cached = cache.get(buffer);
+    if (cached != null) return cached;
+    const data = buffer.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      const v = Math.abs(data[i]);
+      if (v > peak) peak = v;
+    }
+    const gain = peak > 0.001 ? Math.min(0.9 / peak, 6) : 1;
+    cache.set(buffer, gain);
+    return gain;
+  };
+
   /**
    * Schedule one note. `when` and `duration` are in AudioContext seconds.
    * Returns the source so a caller can stop it early.
@@ -125,12 +161,16 @@ export function useSampler() {
       // than its sample ends on a click. Soundfont recordings carry their
       // own natural release tail, so give them a longer ramp to let it
       // breathe instead of chopping it at the note boundary.
+      const level = gain * makeupFor(sample.buffer);
       const env = ctx.createGain();
-      const tail = entry.type === 'soundfont' ? 0.25 : 0.02;
-      const release = Math.min(entry.type === 'soundfont' ? 0.2 : 0.06, duration / 2);
+      // Generated one-shots used to get a 20ms tail — factory soundfonts
+      // ring for 250ms, and that difference alone made generated
+      // instruments sound abruptly chopped next to them.
+      const tail = entry.type === 'soundfont' ? 0.25 : 0.15;
+      const release = Math.min(entry.type === 'soundfont' ? 0.2 : 0.12, duration / 2);
       env.gain.setValueAtTime(0, when);
-      env.gain.linearRampToValueAtTime(gain, when + 0.005);
-      env.gain.setValueAtTime(gain, when + duration - release);
+      env.gain.linearRampToValueAtTime(level, when + 0.005);
+      env.gain.setValueAtTime(level, when + duration - release);
       env.gain.linearRampToValueAtTime(0.0001, when + duration + tail);
 
       source.connect(env).connect(destination || ctx.destination);
@@ -179,7 +219,7 @@ export function useSampler() {
 
       const env = ctx.createGain();
       env.gain.setValueAtTime(0, ctx.currentTime);
-      env.gain.linearRampToValueAtTime(gain, ctx.currentTime + 0.005);
+      env.gain.linearRampToValueAtTime(gain * makeupFor(sample.buffer), ctx.currentTime + 0.005);
       source.connect(env).connect(destination || ctx.destination);
       source.start();
 

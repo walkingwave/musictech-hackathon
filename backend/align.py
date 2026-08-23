@@ -27,6 +27,13 @@ log = logging.getLogger(__name__)
 # artifacts; better to leave it alone and let the user regenerate.
 MAX_STRETCH = 1.25
 
+# ...and refuse to stretch WITHIN this band. Beat trackers carry a few
+# percent of measurement noise, and "correcting" it ran the whole take
+# through a phase vocoder — which smears every transient — to fix a drift
+# nobody could hear. Only a stretch that would be audible is worth its
+# artifacts.
+MIN_STRETCH = 0.035
+
 # rubberband is a native binary (Homebrew on macOS, choco/scoop or a manual
 # download on Windows) and pyrubberband shells out to it. When it is not on
 # PATH we fall back to librosa's phase vocoder — pure Python, so the app works
@@ -85,6 +92,8 @@ def _match_tempo(stem: np.ndarray, target_bpm: float) -> np.ndarray:
     if not (1 / MAX_STRETCH) < ratio < MAX_STRETCH:
         log.warning("stretch ratio %.3f out of range; leaving stem unstretched", ratio)
         return stem
+    if abs(ratio - 1.0) < MIN_STRETCH:
+        return stem  # within measurement noise; the vocoder costs more than the drift
 
     return _time_stretch(stem, ratio)
 

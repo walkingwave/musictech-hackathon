@@ -37,11 +37,14 @@ FMAX_NOTE = "C6"
 # At the default hop this is roughly 58ms: enough to suppress a one-frame
 # octave glitch, but short enough that a deliberately hummed pitch change is
 # not averaged away.
-SMOOTHING_FRAMES = 5
+SMOOTHING_FRAMES = 7
 
 # Same-pitch notes separated by less than this are one note that the
-# tracker briefly lost, not two notes. Mops up residual fragmentation.
-MERGE_GAP = 0.04
+# tracker briefly lost, not two notes. Raised from 40ms after testing on
+# real hums: a consonant or a breath inside a held note reads as an
+# unvoiced gap of 60-90ms, and at 40ms every "da-da" syllable split one
+# note into two.
+MERGE_GAP = 0.09
 
 
 class PyinTracker:
@@ -121,6 +124,17 @@ def _smoothed_pitches(f0, voiced, confidence) -> list[int | None]:
             np.flatnonzero(~usable), np.flatnonzero(usable), midi[usable]
         )
         filled = median_filter(filled, size=SMOOTHING_FRAMES, mode="nearest")
+        # Octave-error folding: pyin's classic failure on a hum is a frame or
+        # three that jump a clean octave (subharmonic lock). The median filter
+        # softens those into wrong in-between pitches instead of removing
+        # them, so fold anything an octave-ish away from its local context
+        # back toward it before rounding.
+        context_window = median_filter(filled, size=25, mode="nearest")
+        for _ in range(2):  # a double jump needs two folds
+            above = filled - context_window >= 7
+            below = context_window - filled >= 7
+            filled[above] -= 12
+            filled[below] += 12
 
     return [int(round(filled[i])) if usable[i] else None for i in range(len(f0))]
 
