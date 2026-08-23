@@ -1007,6 +1007,7 @@ function ClipInspector({
   }, [clip, secondsPerBar]);
 
   const isPart = track.kind !== 'audio';
+  const [shareLabel, setShareLabel] = useState('Share');
   const download = () => {
     import('../wav.js').then(({ audioBufferToWav }) => {
       if (!buffer) return;
@@ -1017,6 +1018,41 @@ function ClipInspector({
       a.download = `${track.name}.wav`;
       a.click();
       URL.revokeObjectURL(url);
+    });
+  };
+  // Share just this track. Native share sheet with the rendered WAV when the
+  // browser supports sharing files; otherwise copy the clip's server URL to
+  // the clipboard. Button label reports what happened, since the inspector
+  // has no toast of its own.
+  const flashLabel = (text) => {
+    setShareLabel(text);
+    window.setTimeout(() => setShareLabel('Share'), 2000);
+  };
+  const share = () => {
+    import('../wav.js').then(async ({ audioBufferToWav }) => {
+      if (!buffer) return;
+      const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
+      const file = new File([wav], `${track.name}.wav`, { type: 'audio/wav' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: track.name });
+        } catch {
+          /* user dismissed the share sheet */
+        }
+        return;
+      }
+      if (clip.audioUrl) {
+        const url = new URL(clip.audioUrl, window.location.origin).href;
+        try {
+          await navigator.clipboard.writeText(url);
+          flashLabel('Link copied');
+          return;
+        } catch {
+          /* clipboard blocked — fall through to a download */
+        }
+      }
+      download();
+      flashLabel('Downloaded');
     });
   };
   const regionBars = region ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar)) : 0;
@@ -1069,6 +1105,9 @@ function ClipInspector({
         </button>
         <button className="i-btn" onClick={download}>
           Download WAV
+        </button>
+        <button className="i-btn" onClick={share}>
+          {shareLabel}
         </button>
         <button className="i-btn danger" onClick={onDelete} title="Delete/Backspace">
           Delete clip

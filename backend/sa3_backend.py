@@ -22,6 +22,7 @@ import io
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -119,6 +120,10 @@ class _MLXRuntime:
 
     label = f"{config.MLX_DIT} (MLX)"
 
+    def status(self) -> str:
+        """ready | not-installed. MLX weights are ungated, so no access step."""
+        return "ready" if self.available() else "not-installed"
+
     def available(self) -> bool:
         installed = config.mlx_venv_python().is_file()
         # Weights are checked too, not just the install. The MLX CLI
@@ -176,19 +181,69 @@ class _TorchRuntime:
 
     label = f"{config.TORCH_DIT} (PyTorch)"
 
+    # How long a non-ready status probe is trusted before re-checking. A
+    # "ready" result is cached forever (access does not get revoked mid-run);
+    # a "no access" or "offline" result is re-probed after this, so granting
+    # access on Hugging Face takes effect without a server restart.
+    _PROBE_TTL = 30.0
+
     def __init__(self):
         self._model = None
+        self._status = None  # (status_str, checked_at)
 
-    def available(self) -> bool:
-        # Import-only check: cheap, and it does not touch the (gated) weights.
-        # A missing weight or a missing HF login surfaces at generate time and
-        # is caught by the fallback, same as any other backend failure.
+    def installed(self) -> bool:
         import importlib.util
 
         return (
             importlib.util.find_spec("stable_audio_3") is not None
             and importlib.util.find_spec("torch") is not None
         )
+
+    def status(self) -> str:
+        """One of: ready | no-access | offline | not-installed.
+
+        Cheap and cached. "ready" means either the weights are already in the
+        HF cache (usable offline) or the gated repo is accessible with the
+        current token. Anything else means picking `local` would fail, so the
+        selector should say so rather than silently falling back to mock.
+        """
+        now = time.monotonic()
+        if self._status is not None:
+            value, checked = self._status
+            if value == "ready" or now - checked < self._PROBE_TTL:
+                return value
+        value = self._probe()
+        self._status = (value, now)
+        return value
+
+    def _probe(self) -> str:
+        if not self.installed():
+            return "not-installed"
+        try:
+            from stable_audio_3.model_configs import models
+            from huggingface_hub import auth_check, try_to_load_from_cache
+            from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+        except Exception:  # noqa: BLE001 - treat any import failure as not installed
+            return "not-installed"
+
+        cfg = models.get(config.TORCH_DIT)
+        if cfg is None:
+            return "no-access"  # unknown DiT name; nothing we can verify
+
+        # Already downloaded once -> usable with no network at all.
+        if isinstance(try_to_load_from_cache(cfg.repo_id, cfg.ckpt_path), str):
+            return "ready"
+
+        try:
+            auth_check(cfg.repo_id)  # raises if the gated repo is not accessible
+            return "ready"
+        except (GatedRepoError, RepositoryNotFoundError):
+            return "no-access"
+        except Exception:  # noqa: BLE001 - network down, not cached: cannot confirm
+            return "offline"
+
+    def available(self) -> bool:
+        return self.status() == "ready"
 
     def _load(self):
         if self._model is None:
@@ -242,7 +297,17 @@ class LocalBackend:
     """
 
     id = "local"
-    note = "free, offline, no account needed"
+
+    # Notes per non-ready state, so the disabled option says *why* and what to
+    # do about it rather than just "unavailable".
+    _NOTES = {
+        "no-access": (
+            "needs Hugging Face access — accept the licence at "
+            "huggingface.co/stabilityai/stable-audio-3-small-music"
+        ),
+        "offline": "installed, but can't reach Hugging Face to verify access",
+        "not-installed": "not installed — run: uv sync --extra local",
+    }
 
     def __init__(self):
         # MLX first: on a Mac it is the faster runtime; off a Mac it is never
@@ -255,7 +320,20 @@ class LocalBackend:
     @property
     def label(self) -> str:
         active = self._active()
-        return f"Local — {active.label}" if active else "Local (not installed)"
+        return f"Local — {active.label}" if active else "Local"
+
+    @property
+    def note(self) -> str:
+        if self._active() is not None:
+            return "free, offline, no account needed"
+        # Not runnable: report the most actionable runtime's status. Torch is
+        # the one installable everywhere, so prefer its reason unless it is
+        # simply absent and MLX has a more specific one.
+        statuses = [r.status() for r in self._runtimes]
+        for state in ("no-access", "offline", "not-installed"):
+            if state in statuses:
+                return self._NOTES[state]
+        return "not installed — run: uv sync --extra local"
 
     def available(self) -> bool:
         return self._active() is not None

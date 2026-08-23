@@ -56,7 +56,6 @@ body {
   font-weight: 600;
   height: 46px;
 }
-.wordmark .glyph { width: 11px; height: 11px; background: var(--ink); }
 
 .session {
   display: flex;
@@ -69,6 +68,50 @@ body {
 }
 .session .label { color: var(--muted); letter-spacing: 0.12em; }
 .session .value { color: var(--ink); }
+.session-name {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0.15rem 0.35rem;
+  width: 12rem;
+  max-width: 22vw;
+}
+.session-name:hover { border-color: var(--line); }
+.session-name:focus { border-color: var(--ink); outline: none; background: #fff; }
+
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 1rem;
+  border-right: 1px solid var(--line);
+}
+.proj-btn {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.66rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+.proj-btn:hover:not(:disabled) { background: #f1efe9; }
+.proj-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.model-note {
+  color: #b06a00;
+  font-size: 0.64rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .model-select {
   display: flex;

@@ -22,6 +22,9 @@ export default function App() {
   const [sessionId, setSessionId] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [fileName, setFileName] = useState(null);
+  // A user-chosen session name, editable in the top bar. Falls back to the
+  // uploaded filename, then "Untitled". Persisted so a reload keeps it.
+  const [projectName, setProjectName] = useState(() => localStorage.getItem('projectName') || '');
   const [prompt, setPrompt] = useState('');
   const [selected, setSelected] = useState(() => new Set(['bass', 'drums', 'piano', 'harmony']));
   const [bars, setBars] = useState(16); // target backing length
@@ -76,6 +79,19 @@ export default function App() {
     window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
   }, []);
 
+  // The server quietly falls back to a working backend when the chosen one
+  // can't run (e.g. `local` picked but Hugging Face access not granted yet).
+  // Silent fallback looks like "the model sounds wrong" — so say what ran.
+  const warnOnFallback = useCallback(
+    (result) => {
+      const used = result?.backend_used;
+      if (used && backend && used !== backend) {
+        flash(`"${backend}" couldn't run — generated with "${used}" instead`);
+      }
+    },
+    [backend, flash],
+  );
+
   const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
     setSessionId(null);
@@ -103,6 +119,40 @@ export default function App() {
   const selectBackend = (id) => {
     setBackend(id);
     localStorage.setItem('backend', id);
+  };
+
+  const displayName = projectName || fileName || 'Untitled';
+
+  const renameSession = (name) => {
+    setProjectName(name);
+    localStorage.setItem('projectName', name);
+  };
+
+  // The whole project as a zip: every stem, its MIDI, the vocal and a
+  // provenance manifest — the deliverable a musician drops into a DAW.
+  const exportProject = () => {
+    if (!sessionId) return flash('Nothing to export yet — generate something first');
+    const a = document.createElement('a');
+    a.href = apiClient.exportUrl(sessionId);
+    a.download = `${displayName.replace(/[^\w-]+/g, '_') || 'project'}.zip`;
+    a.click();
+  };
+
+  // Share the export link. Uses the native share sheet when the browser has
+  // one (mobile, some desktops), else copies the link to the clipboard.
+  const shareProject = async () => {
+    if (!sessionId) return flash('Nothing to share yet — generate something first');
+    const url = new URL(apiClient.exportUrl(sessionId), window.location.origin).href;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: displayName, url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      flash('Project export link copied to clipboard');
+    } catch {
+      /* user dismissed the share sheet — nothing to do */
+    }
   };
 
   const toggleStem = (id) =>
@@ -165,9 +215,10 @@ export default function App() {
         backend,
         seed: opts.seed,
       });
+      warnOnFallback(result);
       return result;
     },
-    [sessionId, prompt, backend, ensureSession],
+    [sessionId, prompt, backend, ensureSession, warnOnFallback],
   );
 
   const ensureVocalTrack = useCallback(async () => {
@@ -249,9 +300,10 @@ export default function App() {
         mode: studioMode,
       });
       if (!sessionId) setSessionId(result.session_id);
+      warnOnFallback(result);
       return result;
     },
-    [sessionId, backend, studioBpm, studioKey, studioMode],
+    [sessionId, backend, studioBpm, studioKey, studioMode, warnOnFallback],
   );
 
   // Adding an instrument to the library also gives you somewhere to play
@@ -295,8 +347,12 @@ export default function App() {
       <Header
         view={view}
         onView={setView}
-        sessionName={fileName || 'Untitled'}
+        sessionName={displayName}
+        onRenameSession={renameSession}
         tracksReady={engine.tracks.length > 0}
+        canExport={!!sessionId}
+        onExportProject={exportProject}
+        onShareProject={shareProject}
         backends={backends}
         backend={backend}
         onBackend={selectBackend}

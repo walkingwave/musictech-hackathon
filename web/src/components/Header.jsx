@@ -1,48 +1,85 @@
-// Top bar: wordmark, current session name, the global model selector, and the
-// view tabs. TRACKS is disabled until a vocal has been analyzed (there is
-// nothing to mix yet). The model selector lives here so the choice applies to
-// every view, not just the Input page, and stays visible while you work.
+// Top bar: wordmark, the (editable) session name, project export/share, the
+// global model selector, and the view tabs. The model selector lives here so
+// the choice applies to every view, not just the Generate page, and stays
+// visible while you work.
 export default function Header({
   view,
   onView,
   sessionName,
+  onRenameSession,
   tracksReady,
+  onExportProject,
+  onShareProject,
+  canExport = false,
   backends = [],
   backend,
   onBackend,
 }) {
   const tabs = [
-    { id: 'input', label: 'Input', enabled: true },
+    { id: 'input', label: 'Generate', enabled: true },
     { id: 'studio', label: 'Studio', enabled: true },
-    { id: 'instrument', label: 'New Instrument', enabled: true },
+    { id: 'instrument', label: 'Instruments', enabled: true },
   ];
+  const selected = backends.find((b) => b.id === backend);
   return (
     <header className="header">
       <div className="wordmark">
-        <span className="glyph" />
-        Backing Track Generator
+        Unstable DAW
       </div>
       <div className="session">
         <span className="label">Session</span>
-        <span className="value">{sessionName}</span>
+        <input
+          className="session-name"
+          value={sessionName}
+          onChange={(e) => onRenameSession?.(e.target.value)}
+          spellCheck={false}
+          title="Rename this session"
+          aria-label="Session name"
+        />
       </div>
+
+      <div className="project-actions">
+        <button
+          className="proj-btn"
+          disabled={!canExport}
+          onClick={onExportProject}
+          title="Download every stem, its MIDI, the vocal and a manifest as a zip"
+        >
+          Export
+        </button>
+        <button
+          className="proj-btn"
+          disabled={!canExport}
+          onClick={onShareProject}
+          title="Share a link to this project's export"
+        >
+          Share
+        </button>
+      </div>
+
       {onBackend && (
         <div className="model-select">
           <span className="label">Model</span>
           <select
             value={backend}
             onChange={(e) => onBackend(e.target.value)}
-            title="Which backend generates audio"
+            title={selected?.note || 'Which backend generates audio'}
           >
             {backends.map((b) => (
-              <option key={b.id} value={b.id} disabled={!b.available}>
+              <option key={b.id} value={b.id} disabled={!b.available} title={b.note}>
                 {b.label}
                 {b.available ? '' : ' — unavailable'}
               </option>
             ))}
           </select>
+          {selected && !selected.available && (
+            <span className="model-note" title={selected.note}>
+              {selected.note}
+            </span>
+          )}
         </div>
       )}
+
       <nav className="tabs">
         {tabs.map((t) => (
           <button
