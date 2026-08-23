@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 import subprocess
 import tempfile
 import time
@@ -386,11 +387,12 @@ class StabilityAPIBackend:
             fields = {
                 "model": (None, config.STABILITY_MODEL),
                 "prompt": (None, prompt),
-                "duration": (None, str(min(int(duration), config.STABILITY_MAX_DURATION))),
+                "duration": (None, str(min(math.ceil(duration), config.STABILITY_MAX_DURATION))),
                 # Sample takes pass seed=None to mean "vary": honour it with
                 # a fresh seed instead of crashing on int(None).
                 "seed": (None, str(max(0, int(seed))) if seed is not None
                          else str(int(np.random.default_rng().integers(0, 2**31)))),
+                "steps": (None, "8"),
                 "output_format": (None, "wav"),
             }
             response = httpx.post(
@@ -418,8 +420,14 @@ class StabilityAPIBackend:
                 "model": config.STABILITY_MODEL,
                 "prompt": prompt,
                 "strength": str(noise),
-                "duration": str(min(int(duration), config.STABILITY_MAX_DURATION)),
+                # Ceil, not int(): sessions are rarely whole seconds (4 bars
+                # at 100 BPM is 9.6s) and truncation returned a master that
+                # ran short, so align padded the final beat with silence.
+                "duration": str(min(math.ceil(duration), config.STABILITY_MAX_DURATION)),
                 "seed": str(max(0, int(seed))),
+                # The endpoint caps steps at 8 and its default is undocumented;
+                # pin the maximum so quality never depends on a silent default.
+                "steps": "8",
                 "output_format": "wav",
             },
             timeout=180.0,

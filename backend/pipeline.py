@@ -926,8 +926,13 @@ def generate_song(
         voice_index = int(track.get("voice_index", 0))
         voice_count = int(track.get("voice_count", 1))
 
-        if allocated is not None:
-            stem, source = allocated[index]
+        # `allocate` returns None for a request the separation cannot serve
+        # honestly (a drums bucket that failed its energy floor, an empty
+        # pool) — that one track carves generatively while the rest keep
+        # their separated stems.
+        assignment = allocated[index] if allocated is not None else None
+        if assignment is not None:
+            stem, source = assignment
             backend_used, fallback_error = master_backend, master_error
             stem_prompt = f"{master_prompt} [demucs:{source}]"
             # Deliberately untouched: both an SA3 refinement pass and DSP
@@ -960,7 +965,7 @@ def generate_song(
             )
             stem = align.align(raw, master, target_bpm=work.bpm)
 
-        if allocated is None:
+        if assignment is None:
             # Only the carve path is gated and polished: a separated stem IS
             # the master's own performance — its arrangement, balance and
             # spectrum are already right, and re-balancing or filtering it

@@ -742,7 +742,14 @@ def _arrange_melody(
 
         # Two leads in the same octave fight; the second sits a register
         # lower so a sax and a guitar occupy different space in the mix.
-        octave = 5 if human.voice_index % 2 == 0 else 4
+        #
+        # Octave 4, not 5: chord_to_midi(octave=5) anchors the line at MIDI
+        # 72-83 and the contour tops out near G6 — above the whole range of
+        # a tenor sax and most leads. The model follows the guide's register
+        # even when the instrument cannot, so every lead came back as a
+        # high-pitched synth whistle rather than the instrument asked for.
+        # Octave 4 puts the anchor around middle C, where leads actually sit.
+        octave = 4 if human.voice_index % 2 == 0 else 3
         triad = chord_to_midi(bar.chord, octave=octave)
         anchor = triad[0] if bar_plan.phrase_pos % 2 == 0 else triad[min(2, len(triad) - 1)]
 

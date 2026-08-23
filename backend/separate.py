@@ -215,6 +215,20 @@ def _crossover_split(audio: np.ndarray, cuts: tuple[float, ...]) -> list[np.ndar
 TRUSTED_SOURCES = ("drums", "bass", "vocals", "piano", "guitar")
 HARMONIC_POOL = ("other",)
 
+# The witness's piano and guitar buckets need a much higher bar than the
+# 4-stem model's own sources: after the joint remask most of the actual
+# piano energy stays in "other", and a bucket that scraped past the 5%
+# floor shipped as a stem with 0.008 RMS — a track that is audibly just
+# silence. Below this the request is served from the harmonic pool, where
+# its content actually is.
+WEAK_SOURCE_FLOOR = {"piano": 0.15, "guitar": 0.15}
+
+# Sources whose content cannot be recovered from the harmonic pool if the
+# bucket fails. The pool is "other" — purely harmonic material — so handing
+# a drums request a band of it produces a stem with no drums on it at all:
+# a 250-1000Hz slice of everyone else. Those requests carve instead.
+UNPOOLABLE = ("drums", "vocals")
+
 
 def allocate(
     separated: dict[str, np.ndarray],
@@ -222,17 +236,24 @@ def allocate(
     master: np.ndarray,
     templates: list[np.ndarray | None] | None = None,
     evidence: dict[str, np.ndarray] | None = None,
-) -> list[tuple[np.ndarray, str]]:
+) -> list[tuple[np.ndarray, str] | None]:
     """Give each requested (part, instrument) its slice of the separation.
 
-    Two regimes:
-    - a request whose instrument maps to a TRUSTED source (drums, bass,
-      vocals) takes that bucket, gated by an energy floor because Demucs
-      returns residue rather than silence for an absent instrument;
-    - every other request shares the pooled harmonic audio (piano + guitar
-      + other summed), divided by each track's own score template — any
-      instrument, any register, and no dependence on Demucs' weakest
-      buckets. Complementary crossovers remain the no-template fallback.
+    Returns one entry per request, aligned by index. `None` means the
+    separation has nothing honest to offer this request — its bucket is
+    empty and its content is not in the pool either — and the caller should
+    fall back to a generative carve for that one track rather than shipping
+    the wrong audio. (This actually happened: a quiet jazz kit failed the
+    drums bucket's energy floor, fell into the harmonic pool, and the drums
+    stem shipped as a 250-1000Hz slice of piano and sax.)
+
+    Two regimes for the rest:
+    - a request whose instrument maps to a TRUSTED source takes that bucket,
+      gated by an energy floor because Demucs returns residue rather than
+      silence for an absent instrument (piano and guitar carry a stricter
+      floor — see WEAK_SOURCE_FLOOR);
+    - every other request shares the pooled harmonic audio, divided by
+      complementary crossovers so the slices still sum to the pool.
     """
     master_rms = float(np.sqrt(np.mean(np.square(master)))) or 1.0
 
@@ -240,31 +261,47 @@ def allocate(
         stem = separated.get(name)
         if stem is None:
             return False
-        return float(np.sqrt(np.mean(np.square(stem)))) >= ENERGY_FLOOR * master_rms
+        floor = WEAK_SOURCE_FLOOR.get(name, ENERGY_FLOOR)
+        return float(np.sqrt(np.mean(np.square(stem)))) >= floor * master_rms
 
     out: list[tuple[np.ndarray, str] | None] = [None] * len(requests)
     pool_indexes: list[int] = []
+    taken: set[str] = set()
     for i, (part, instrument) in enumerate(requests):
         source = source_for(part, instrument)
         if source in TRUSTED_SOURCES and usable(source):
             out[i] = (np.array(separated[source], dtype=np.float32, copy=True), source)
+            taken.add(source)
+        elif source in UNPOOLABLE:
+            log.info("%s bucket too weak for %r; leaving it to the carve", source, part)
         else:
             pool_indexes.append(i)
 
-    if not pool_indexes:
-        return [x for x in out if x is not None]
-
+    # The pool is "other" plus any harmonic bucket no track claimed — a weak
+    # piano bucket that was not adopted still holds real piano audio, and
+    # dropping it would break the stems summing back to the master.
     pool = np.zeros_like(master)
-    for name in HARMONIC_POOL:
+    for name in (*HARMONIC_POOL, "piano", "guitar"):
+        if name in taken:
+            continue
         audio = separated.get(name)
         if audio is not None:
             n = min(len(pool), len(audio))
             pool[:n] += np.asarray(audio[:n], dtype=np.float32)
 
+    if not pool_indexes:
+        return out
+
+    # A pool with no real energy in it means the requests routed here would
+    # get silence dressed up as a stem; the carve serves them better.
+    if float(np.sqrt(np.mean(np.square(pool)))) < ENERGY_FLOOR * master_rms:
+        log.info("harmonic pool near-empty; leaving %d track(s) to the carve", len(pool_indexes))
+        return out
+
     if len(pool_indexes) == 1:
         i = pool_indexes[0]
         out[i] = (pool, f"pool:{requests[i][0]}")
-        return [x for x in out if x is not None]
+        return out
 
     # Complementary crossovers only. Score-template masking was tried here
     # and reverted: the templates are fixed-octave saws, and masking a real
@@ -275,7 +312,7 @@ def allocate(
     bands = _crossover_split(pool, cuts[: len(ordered) - 1])
     for band, i in zip(bands, ordered):
         out[i] = (band, f"pool:{requests[i][0]}-band")
-    return [x for x in out if x is not None]
+    return out
 
 
 # Sharpness of the re-masking. 1 keeps Demucs' own softness, 2 is standard
