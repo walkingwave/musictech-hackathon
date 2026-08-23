@@ -13,12 +13,13 @@ from __future__ import annotations
 import logging
 import math
 import random
+import re
 
 import numpy as np
 import pretty_midi
 import soundfile as sf
 
-from . import align, arrange, config, grooves, prompts, render_guide, sa3_backend
+from . import align, arrange, config, grooves, mix, prompts, render_guide, sa3_backend
 from .analysis import analyze
 from .config import SAMPLE_RATE
 from .models import Analysis, Arrangement, Bar, Part, StemResult
@@ -158,6 +159,23 @@ def track_name(session: Session, part: Part, requested: str | None) -> str:
         if candidate not in existing:
             return candidate
     return base[:40]
+
+
+# Words that mean "this part on its own". A solo take is the one case where
+# the ensemble context is actively wrong: mixing the rest of the band under
+# the guide is what makes parts cohere, but asked for a slap bass solo the
+# model rendered the drums it could hear straight into the bass stem.
+SOLO_WORDS = re.compile(
+    r"\bsolo\b|\balone\b|\bunaccompanied\b|\bisolated\b|\bby itself\b|"
+    r"\bon its own\b|\bjust the\b|\bnothing else\b|\ba cappella\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_solo(*texts: str) -> bool:
+    return any(SOLO_WORDS.search(text or "") for text in texts)
+
+
 def _gate_to_activity(
     stem: np.ndarray, analysis: Analysis, active: list[bool]
 ) -> np.ndarray:
@@ -269,6 +287,9 @@ def generate_stem(
     # comping parts lay out for each other instead of all playing at once.
     voice_index: int = 0,
     voice_count: int = 1,
+    # None decides from the request text: a solo take gets no band under it,
+    # anything else does. True or False forces it either way.
+    ensemble: bool | None = None,
 ) -> StemResult:
     """Stages 2-5 for one part: arrange, render a guide, generate, align.
 
@@ -319,18 +340,32 @@ def generate_stem(
     # Stage 3b: put the band underneath it. A part generated against only its
     # own guide has no idea what it is joining; against the finished stems it
     # picks up their room, density and balance. A `mix` is the whole band
-    # already, so it has nothing to join.
+    # already, so it has nothing to join — and a solo take wants nothing
+    # under it at all, or the model renders the band it can hear into the
+    # stem, which is how a slap bass solo came back with drums on it.
     context_names: list[str] = []
-    if part != "mix":
+    solo = _wants_solo(instrument, style or "")
+    if ensemble is None:
+        ensemble = not solo
+    if part != "mix" and ensemble:
         guide, context_names = _ensemble_guide(
             session, guide, exclude=name, level=config.ENSEMBLE_LEVEL
         )
+    elif solo:
+        log.info("%s: solo requested, generating without ensemble context", name)
 
     # Stage 4: hand the guide to Stable Audio 3.
+    if context_names:
+        # Follow the input more closely than a bare guide would: the band is
+        # in that input now, and at the default strength the model transforms
+        # most of it away before it can influence anything. Kept small: this
+        # dial trades cohesion against bleed, and a stem with someone else's
+        # guitar in it is worse than a stem that merely sits loosely.
+        noise = max(config.ENSEMBLE_MIN_STRENGTH, noise - config.ENSEMBLE_STRENGTH_DROP)
     prompt = prompts.build(part, work, style, instrument, production, bool(context_names))
     log.info(
-        "generating %s [%s] seed=%d bars=%d context=%s",
-        name, prompt, seed, len(work.bars), ",".join(context_names) or "none",
+        "generating %s [%s] seed=%d bars=%d strength=%.2f context=%s",
+        name, prompt, seed, len(work.bars), noise, ",".join(context_names) or "none",
     )
 
     raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
@@ -351,6 +386,12 @@ def generate_stem(
     stem = _gate_to_activity(
         stem, work, arrange.activity(part, len(work.bars), voice_index, voice_count)
     )
+
+    # Stage 7: sit it in the mix. Carve the low end it does not own and level
+    # it to its role, so five stems arriving at "as loud as possible" do not
+    # fight — most of what reads as clashing is low-frequency masking plus a
+    # level war, and both are fixable deterministically.
+    stem = mix.polish(stem, part)
     session.write_audio(session.stem_path(name), stem)
 
     result = StemResult(

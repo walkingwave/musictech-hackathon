@@ -52,8 +52,8 @@ export const generateFromMidi = (body) => postJSON('/generate-from-midi', body);
 // loading the same instrument again costs nothing.
 export const instrumentSamples = (body) => postJSON('/instrument/samples', body);
 
-export const interpret = (text, sessionId) =>
-  postJSON('/interpret', { text, session_id: sessionId ?? null });
+export const interpret = (text, sessionId, mode) =>
+  postJSON('/interpret', { text, session_id: sessionId ?? null, mode: mode ?? null });
 
 // Describe a part in words, get back NOTES rather than audio. The phrase
 // lands on a MIDI track, so it stays editable in the piano roll.

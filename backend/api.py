@@ -73,6 +73,9 @@ class GenerateRequest(BaseModel):
     # have leads trade phrases instead of all soloing at once.
     voice_index: int = 0
     voice_count: int = 1
+    # Whether the stems already on the timeline are mixed under this one as
+    # context. None lets the backend decide from the request text.
+    ensemble: bool | None = None
 
 
 
@@ -180,6 +183,7 @@ def generate(request: GenerateRequest) -> dict:
                 production=request.production,
                 voice_index=request.voice_index,
                 voice_count=request.voice_count,
+                ensemble=request.ensemble,
             )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
@@ -196,6 +200,12 @@ def generate(request: GenerateRequest) -> dict:
 class InterpretRequest(BaseModel):
     text: str
     session_id: str | None = None
+    # What the user picked in the UI: "stems" (a track per instrument),
+    # "single" (the whole band in one track), or "midi" (editable notes).
+    # Explicit because phrasing does not settle it — "a drum backing track"
+    # is one stem to a musician and a whole arrangement to a model reading
+    # the word "track".
+    mode: str | None = None
 
 
 @app.post("/api/interpret")
@@ -227,7 +237,7 @@ def interpret_request(request: InterpretRequest) -> dict:
         except (FileNotFoundError, ValueError):
             context = None  # unanalyzed or missing session - no context to add
 
-    plan, source = interpret.interpret_with_source(request.text, context)
+    plan, source = interpret.interpret_with_source(request.text, context, request.mode)
     return {**plan.model_dump(), "interpreter": source}
 
 

@@ -308,6 +308,7 @@ export default function App() {
         name: opts.name,
         instrument: opts.instrument,
         production: opts.production,
+        ensemble: opts.ensemble,
         voice_index: opts.voice_index,
         voice_count: opts.voice_count,
         backend,

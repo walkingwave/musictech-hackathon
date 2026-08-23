@@ -82,6 +82,16 @@ ENSEMBLE_LEVEL = 0.3
 # unrelated ideas. The most recent few are the ones being worked on.
 ENSEMBLE_MAX_TRACKS = 4
 
+# Stable Audio's `strength` is how far the output is allowed to diverge from
+# the input audio, and 0.8 is their recommended starting point. That is tuned
+# for "here is a rough sketch, make it real" — but when the band is mixed into
+# the input as context, 0.8 transforms most of that context away too. Their
+# own guidance is to lower it when the output strays too far from the input,
+# so a part generated against the band follows it more closely than one
+# generated against a bare guide.
+ENSEMBLE_STRENGTH_DROP = 0.05
+ENSEMBLE_MIN_STRENGTH = 0.6
+
 # A full mix needs more freedom than a single stem: the guide is a crude
 # four-layer sketch, and holding the model to it too tightly renders the
 # sketch rather than a record.

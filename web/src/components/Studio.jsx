@@ -323,13 +323,13 @@ export default function Studio({
   };
 
   // Agentic bar: interpret the request, then generate each part in turn.
-  const runRequest = async (text) => {
+  const runRequest = async (text, mode = 'stems') => {
     setBusy(true);
     setStatus('Interpreting…');
 
     let plan;
     try {
-      plan = await apiClient.interpret(text, sessionId);
+      plan = await apiClient.interpret(text, sessionId, mode);
     } catch (e) {
       setStatus(`Could not interpret — ${e.message}`);
       setBusy(false);
@@ -360,6 +360,15 @@ export default function Studio({
       piano: 'comp', guitar: 'comp', harmony: 'comp',
       melody: 'lead', free: 'lead',
     };
+    // Generate the rhythm section first, then comping, then leads. Each part
+    // is generated against the stems already made, so the order decides what
+    // the context IS: a lead cut against drums and bass locks to a groove,
+    // a lead cut first is cut against nothing and everything after has to
+    // live with whatever feel it invented.
+    const ROLE_ORDER = { rhythm: 0, comp: 1, lead: 2 };
+    plan.tracks.sort(
+      (a, b) => (ROLE_ORDER[ROLE[a.part]] ?? 2) - (ROLE_ORDER[ROLE[b.part]] ?? 2),
+    );
     const roleCounts = {};
     const voices = plan.tracks.map((spec) => {
       const role = ROLE[spec.part] || 'lead';
@@ -368,6 +377,13 @@ export default function Studio({
       return { role, index };
     });
     const roleTotals = roleCounts;
+
+    // Nothing to cohere with when the user asked for a single track: the
+    // ensemble bed exists to make parts of one arrangement sit together,
+    // and mixing whatever is already in the session under a standalone
+    // request is how a drum track came back with someone else's guitar
+    // bleeding through it.
+    const ensemble = plan.tracks.length > 1 ? undefined : false;
 
     try {
       for (const [i, spec] of plan.tracks.entries()) {
@@ -408,6 +424,7 @@ export default function Studio({
           // leads trade phrases and the comping parts lay out for each other.
           voice_index: voices[i].index,
           voice_count: roleTotals[voices[i].role] || 1,
+          ensemble,
           // No seed on purpose: the backend reuses the arrangement's seed for
           // every part, which keeps their timbre and room in the same place.
           // The per-clip regenerate buttons still pass their own.
@@ -736,16 +753,44 @@ export default function Studio({
 // Describe an arrangement in words; parse it into parts + style and
 // generate each one. The plan is shown before you commit, because a
 // misread request costs a minute of generation.
+//
+// The mode is picked, not inferred. "Give me a drum backing track" is one
+// stem to a musician and a whole arrangement to a model reading the word
+// "track", and there is no phrasing that reliably separates the two — so
+// the user says which they want and the agent is told, not asked.
+const MODES = [
+  { id: 'stems', label: 'Separate tracks', hint: 'One generated track per instrument' },
+  { id: 'single', label: 'One track', hint: 'The whole band rendered as a single track' },
+  { id: 'midi', label: 'MIDI', hint: 'Editable notes in the piano roll, not audio' },
+];
+
 function AskBar({ busy, onRun, status }) {
   const [text, setText] = useState('');
+  const [mode, setMode] = useState('stems');
 
   const submit = (e) => {
     e.preventDefault();
-    if (!busy && text.trim()) onRun(text);
+    if (!busy && text.trim()) onRun(text, mode);
   };
+
+  const selected = MODES.find((m) => m.id === mode);
 
   return (
     <form className="askbar" onSubmit={submit}>
+      <select
+        className="ask-mode"
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+        disabled={busy}
+        title={selected?.hint}
+        aria-label="What to generate"
+      >
+        {MODES.map((m) => (
+          <option key={m.id} value={m.id} title={m.hint}>
+            {m.label}
+          </option>
+        ))}
+      </select>
       <input
         className="ask-input"
         placeholder="Describe what you want — “bass, drums and piano, bossa nova”"
@@ -757,7 +802,7 @@ function AskBar({ busy, onRun, status }) {
         {busy ? '…' : 'Generate'}
       </button>
       <span className="ask-plan">
-        {status || (text.trim() ? 'Ask the agent to plan and generate tracks' : '')}
+        {status || (text.trim() ? selected?.hint : '')}
       </span>
     </form>
   );

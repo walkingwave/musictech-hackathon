@@ -900,3 +900,18 @@ input[type="range"] { accent-color: var(--ink); }
   cursor: pointer;
 }
 .session-del:hover { background: #f1efe9; border-color: var(--hot); }
+
+/* The generate bar's mode picker: what to make, said rather than inferred. */
+.ask-mode {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.ask-mode:disabled { opacity: 0.5; cursor: not-allowed; }

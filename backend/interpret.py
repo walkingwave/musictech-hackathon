@@ -200,6 +200,87 @@ class Context(BaseModel):
         )
         return "\n".join(lines)
 
+# What the user asked the request to produce. Passed explicitly by the UI so
+# the agent never has to infer it from phrasing — "give me a drum backing
+# track" is one stem to a musician and a whole arrangement to a model reading
+# the word "track", and guessing wrong either way is worse than asking.
+MODES = ("stems", "single", "midi")
+
+MODE_RULES = {
+    "stems": (
+        "MODE: separate tracks. Return one track per instrument, `midi` false "
+        "on all of them, and NEVER `part: \"mix\"`. Return exactly the "
+        "instruments the user named; choose the parts yourself only if they "
+        "named none."
+    ),
+    "single": (
+        "MODE: one track. Return EXACTLY ONE track with `part: \"mix\"` and "
+        "`midi` false, describing the whole band in its `instrument`. Never "
+        "return more than one track in this mode."
+    ),
+    "midi": (
+        "MODE: MIDI. Return one track per instrument with `midi` true on every "
+        "one, and NEVER `part: \"mix\"`. These become editable note tracks, so "
+        "describe an instrument that plays notes, not a full mix."
+    ),
+}
+
+
+def _apply_mode(plan: Plan, mode: str | None) -> Plan:
+    """Force the plan to match the mode the user picked.
+
+    The system prompt already asks for it, but a mode the user chose from a
+    control is a fact, not a preference — so it is enforced here rather than
+    hoped for. Anything the model returns that contradicts it is corrected.
+    """
+    if mode not in MODES:
+        return plan
+
+    if mode == "single":
+        if len(plan.tracks) != 1 or plan.tracks[0].part != "mix":
+            # Collapse whatever came back into one mix track, keeping every
+            # instrument named so the description still covers the band.
+            described = ", ".join(
+                t.instrument.strip() or t.name for t in plan.tracks if (t.instrument or t.name)
+            )
+            plan.tracks = [
+                TrackSpec(
+                    part="mix",
+                    name=plan.style.title() if plan.style else "Full mix",
+                    instrument=described or plan.style,
+                    style="",
+                    midi=False,
+                )
+            ]
+        plan.tracks[0].midi = False
+        return plan
+
+    # stems and midi both want per-instrument tracks; a mix is never one.
+    if any(t.part == "mix" for t in plan.tracks):
+        expanded: list[TrackSpec] = []
+        for track in plan.tracks:
+            if track.part != "mix":
+                expanded.append(track)
+                continue
+            # One mix asked for as separate parts becomes the band it stood
+            # for, all sharing its description.
+            for part in ("drums", "bass", "piano", "melody"):
+                expanded.append(
+                    TrackSpec(
+                        part=part,
+                        name=part.title(),
+                        instrument=track.instrument,
+                        style=track.style,
+                        midi=False,
+                    )
+                )
+        plan.tracks = expanded
+
+    for track in plan.tracks:
+        track.midi = mode == "midi"
+    return plan
+
+
 
 def interpret(text: str, context: Context | None = None) -> Plan:
     """Best available interpretation of `text`, never raising.
@@ -211,13 +292,21 @@ def interpret(text: str, context: Context | None = None) -> Plan:
     return plan
 
 
-def interpret_with_source(text: str, context: Context | None = None) -> tuple[Plan, str]:
-    """Best available interpretation plus the provider that actually produced it."""
+def interpret_with_source(
+    text: str, context: Context | None = None, mode: str | None = None
+) -> tuple[Plan, str]:
+    """Best available interpretation plus the provider that actually produced it.
+
+    `mode` is the output shape the user picked in the UI — separate tracks, one
+    track, or MIDI. It is applied to whichever interpreter answered, so the
+    offline fallback obeys it too.
+    """
     try:
-        return _interpret_with_deepseek(text, context), "deepseek"
+        plan, source = _interpret_with_deepseek(text, context, mode), "deepseek"
     except Exception as error:  # noqa: BLE001 - any failure falls back to rules
         log.info("falling back to keyword parsing: %s", error)
-        return _interpret_with_rules(text, context), "rules"
+        plan, source = _interpret_with_rules(text, context), "rules"
+    return _apply_mode(plan, mode), source
 
 
 def interpreter_name() -> str:
@@ -229,12 +318,15 @@ def deepseek_available() -> bool:
     return config.BTG_AGENT_PROVIDER == "deepseek" and bool(config.DEEPSEEK_API_KEY)
 
 
-def _interpret_with_deepseek(text: str, context: Context | None) -> Plan:
+def _interpret_with_deepseek(text: str, context: Context | None, mode: str | None = None) -> Plan:
     """Use DeepSeek JSON mode to produce the same Plan shape the UI already executes."""
     if not deepseek_available():
         raise RuntimeError("DeepSeek is not configured")
 
     system = _deepseek_system_prompt()
+    if mode in MODE_RULES:
+        # Last, so it wins over anything general the prompt said about shape.
+        system = f"{system}\n\n{MODE_RULES[mode]}"
     if context and (described := context.describe()):
         system = f"{system}\n\n{described}"
 
@@ -300,11 +392,16 @@ Important:
   about adding or changing a sound. Change them when the request carries a
   mood or genre of its own — a sad ballad in a session set to 120 BPM C
   major should come back slow and minor.
-- A request for a song, track, beat or instrumental means a full ARRANGEMENT:
-  return the separate parts that make it up — typically drums, bass, a
-  chordal part and a melody — so the user can mix, mute and edit them. Four
-  tracks, not one. Only collapse it into a single `mix` track when the user
-  explicitly asks for one track.
+- Return EXACTLY the instruments the user named, and nothing else. "Give me a
+  drum backing track" is one drums track — not drums plus a bass, a piano and
+  a lead to go with it. Never add a part they did not ask for, however
+  incomplete the result sounds to you: they are building the arrangement one
+  track at a time, and the parts they have not asked for yet are the ones
+  they are about to.
+- Only when the user names NO instrument at all ("make me something upbeat",
+  "a lo-fi beat") do you choose the parts yourself: drums, bass, a chordal
+  part and a melody. Collapse that into a single `mix` track only when they
+  explicitly ask for one track.
 """
 
 
