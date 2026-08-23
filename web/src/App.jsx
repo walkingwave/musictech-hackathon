@@ -413,6 +413,7 @@ export default function App() {
           onBpm={setStudioBpm}
           onKey={setStudioKey}
           onMode={setStudioMode}
+          onBars={setBars}
           onGenerateStem={studioGenerate}
           onGenerateFromReference={studioGenerateFromReference}
           onRenderMidi={renderMidi}

@@ -40,7 +40,7 @@ const SNAPS = [
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 export default function Studio({
-  engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
+  engine, bpm, keyName, mode, onBpm, onKey, onMode, onBars, detected,
   onGenerateStem, onGenerateFromReference, onRenderMidi, sessionId,
   instruments = [], onCreateInstrument, sampler, backend,
 }) {
@@ -332,13 +332,23 @@ export default function Studio({
       return;
     }
 
-    // Tempo and key are part of the request too ("90 BPM in D minor"), and
-    // they have to be applied before generating or the guides use the wrong grid.
-    if (plan.bpm) onBpm(plan.bpm);
-    if (plan.key) onKey(plan.key);
-    if (plan.mode) onMode(plan.mode);
+    // Apply requested musical settings before generating so the server rebuilds
+    // its guide grid with the same tempo and key as the plan.
+    const analysisEdit = Object.fromEntries(
+      Object.entries({ bpm: plan.bpm, key: plan.key, mode: plan.mode })
+        .filter(([, value]) => value != null),
+    );
+    const requestedBars = plan.bars ?? undefined;
 
     try {
+      if (sessionId && Object.keys(analysisEdit).length > 0) {
+        await apiClient.updateAnalysis(sessionId, analysisEdit);
+      }
+      if (plan.bpm != null) onBpm(plan.bpm);
+      if (plan.key != null) onKey(plan.key);
+      if (plan.mode != null) onMode(plan.mode);
+      if (requestedBars != null) onBars?.(requestedBars);
+
       for (const [i, spec] of plan.tracks.entries()) {
         const part = spec.part;
         const label = spec.name || part;
@@ -354,6 +364,7 @@ export default function Studio({
           style,
           name: spec.name,
           instrument: spec.instrument,
+          bars: requestedBars,
           seed: Math.floor(Math.random() * 1e9),
         });
         const buffer = await decodeResult(result);

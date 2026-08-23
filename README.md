@@ -188,7 +188,7 @@ backend/
   api.py           HTTP routes. Thin — musical logic lives in the stages.
   cli.py           headless runner
   test/             developer validation CLIs and ignored test-run artifacts
-frontend/          plain HTML/CSS/JS, no build step
+web/               React/Vite frontend and Node test suite
 scripts/           setup and test-fixture generation
 sessions/<id>/     vocal, guides, stems, MIDI, and a meta.json provenance record
 ```
@@ -217,13 +217,13 @@ SA3; use `--backend local` only for an intentional MLX SA3 smoke test.
 
 ```bash
 uv run uvicorn backend.api:app --reload
-node frontend/test/interpret_generate_test.mjs --backend mock
-node frontend/test/interpret_generate_test.mjs --backend local --require-deepseek
+npm --prefix web run test:integration -- --backend mock
+npm --prefix web run test:integration -- --backend local --require-deepseek
 ```
 
 Each invocation stores redacted request/response JSON and two validation
-results under `frontend/test/test_run/frontend_interpret_generate_test_<timestamp>/`.
-Run the dependency-free runner tests with `cd frontend/test && npm test`.
+results under `web/test/test_run/frontend_interpret_generate_test_<timestamp>/`.
+Run the dependency-free runner tests with `npm --prefix web test`.
 
 ### Sessions
 
@@ -239,7 +239,7 @@ audio routes.
 1. Add the name to `PARTS` in `models.py`
 2. Write `_arrange_<name>` in `arrange.py` and register it in `ARRANGERS`
 3. Add an instrument phrase and an isolation clause in `prompts.py`
-4. Add it to `PARTS` in `frontend/app.js`
+4. Add the corresponding UI support under `web/src/` if needed
 
 ## Measuring detection accuracy
 

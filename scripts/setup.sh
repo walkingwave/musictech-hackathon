@@ -38,6 +38,14 @@ fi
 echo "==> python dependencies"
 uv sync
 
+echo "==> web frontend"
+if ! command -v npm >/dev/null 2>&1; then
+  echo "    !! npm is required to build the web frontend. Install Node.js, then re-run setup."
+  exit 1
+fi
+npm --prefix web ci
+npm --prefix web run build
+
 echo "==> test fixtures"
 uv run python scripts/make_test_vocals.py
 
