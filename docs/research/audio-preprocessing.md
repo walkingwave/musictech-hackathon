@@ -176,7 +176,7 @@ def preprocess_for_analysis(path) -> tuple[np.ndarray, int, InputQuality]:
 1. **`backend/pipeline.py::analyze_vocal`** — replace direct decode/downmix/resample logic; preserve raw upload and store quality results.
 2. **`backend/session.py` / `backend/models.py`** — store input provenance and quality report separately from analysis output.
 3. **`backend/api.py`** — validate upload presence, size, duration, and decodability; return warnings with analysis; use FFmpeg if WebM support is required.
-4. **`frontend/index.html` / `frontend/app.js`** — add quiet-room/one-voice/headphones/no-clipping recording guidance and quality-warning/re-record UI.
+4. **`web/src/components/Studio.jsx` and recording components** — add quiet-room/one-voice/headphones/no-clipping recording guidance and quality-warning/re-record UI.
 5. **`backend/sa3_backend.py`** — add shared guide-to-stereo WAV validation for local and API paths; log guide channels, rate, duration, and peak.
 6. **`pyproject.toml`** — document FFmpeg as a system dependency if adopted; make enhancement models optional extras only after baseline evaluation.
 
@@ -234,7 +234,7 @@ The Stable Audio 3 technical report is an arXiv preprint, not confirmed peer-rev
 
 7. Backing Track Generator. `PLAN.md`. Project design/delivery plan, accessed 2026-08-22. Not peer-reviewed.
 
-8. Backing Track Generator. `backend/pipeline.py`, `backend/analysis.py`, `backend/config.py`, `backend/session.py`, `backend/sa3_backend.py`, `backend/api.py`, `frontend/app.js`, `frontend/index.html`, and `pyproject.toml`. Project implementation/configuration, accessed 2026-08-22. Not peer-reviewed.
+8. Backing Track Generator. `backend/pipeline.py`, `backend/analysis.py`, `backend/config.py`, `backend/session.py`, `backend/sa3_backend.py`, `backend/api.py`, `web/src/`, and `pyproject.toml`. Project implementation/configuration, accessed 2026-08-22. Not peer-reviewed.
 
 9. Kim, Jong Wook, Justin Salamon, Peter Li, and Juan Pablo Bello. “CREPE: A Convolutional Representation for Pitch Estimation.” *IEEE International Conference on Acoustics, Speech and Signal Processing*, 2018. Peer-reviewed conference paper.  
    https://arxiv.org/abs/1802.06182

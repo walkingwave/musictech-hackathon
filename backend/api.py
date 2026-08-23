@@ -763,4 +763,4 @@ def _load(session_id: str) -> Session:
 
 
 # Mounted last, so it does not shadow the /api routes above.
-app.mount("/", StaticFiles(directory=config.FRONTEND_DIR, html=True), name="frontend")
+app.mount("/", StaticFiles(directory=config.WEB_DIST_DIR, html=True), name="web")

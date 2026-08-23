@@ -55,10 +55,9 @@ backend/
   align.py          post-generation grid alignment
   api.py            FastAPI app
   cli.py            headless single-part runner for the dev loop
-frontend/
-  index.html        single page
-  app.js            recorder, backend selector, multitrack player
-  styles.css
+web/
+  src/              React Studio, recorder, backend selector, and multitrack player
+  test/             Node contract and integration tests
 sessions/{uuid}/    per-session working dir (vocal, guides, stems, MIDI, meta.json)
 PLAN.md             this document, committed to the repo
 ```

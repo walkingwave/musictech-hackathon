@@ -43,6 +43,13 @@ if (Get-Command rubberband -ErrorAction SilentlyContinue) {
 Write-Host "==> python dependencies"
 uv sync
 
+Write-Host "==> web frontend"
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm is required to build the web frontend. Install Node.js, then re-run setup."
+}
+npm --prefix web ci
+npm --prefix web run build
+
 Write-Host "==> test fixtures"
 uv run python scripts/make_test_vocals.py
 
