@@ -29,6 +29,7 @@ local = [
 
 [project.scripts]
 btg = "backend.cli:main"
+analysis-test = "backend.analysis_test_cli:main"
 
 [build-system]
 requires = ["hatchling"]

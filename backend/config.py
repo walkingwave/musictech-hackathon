@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = REPO_ROOT / "sessions"
+ANALYSIS_TESTS_DIR = REPO_ROOT / "analysis-tests"
 CACHE_DIR = REPO_ROOT / ".cache"
 FRONTEND_DIR = REPO_ROOT / "frontend"
 
