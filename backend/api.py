@@ -174,7 +174,7 @@ def interpret_request(request: InterpretRequest) -> dict:
     passed as context so a follow-up ("add a piano") extends the current
     arrangement instead of starting a conflicting one.
 
-    Uses Claude when credentials are available and falls back to keyword
+    Uses DeepSeek when credentials are available and falls back to keyword
     matching otherwise, so this endpoint always returns a usable plan
     rather than failing when offline.
     """
@@ -195,8 +195,8 @@ def interpret_request(request: InterpretRequest) -> dict:
         except (FileNotFoundError, ValueError):
             context = None  # unanalyzed or missing session - no context to add
 
-    plan = interpret.interpret(request.text, context)
-    return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
+    plan, source = interpret.interpret_with_source(request.text, context)
+    return {**plan.model_dump(), "interpreter": source}
 
 
 class SamplesRequest(BaseModel):

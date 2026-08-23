@@ -17,6 +17,22 @@ ANALYSIS_TESTS_DIR = REPO_ROOT / "analysis-tests"
 CACHE_DIR = REPO_ROOT / ".cache"
 FRONTEND_DIR = REPO_ROOT / "frontend"
 
+
+def _load_dotenv() -> None:
+    """Small .env loader so setup works without another dependency."""
+    env_path = REPO_ROOT / ".env"
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 # --- audio -------------------------------------------------------------
 
 # Stable Audio 3 works at 44.1kHz stereo. We keep everything at this rate
@@ -69,6 +85,16 @@ DEFAULT_BACKEND = os.environ.get("BTG_DEFAULT_BACKEND", "mock")
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
 STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-3/audio-to-audio"
+
+# --- chat agent --------------------------------------------------------
+
+BTG_AGENT_PROVIDER = os.environ.get("BTG_AGENT_PROVIDER", "deepseek")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY") or None
+DEEPSEEK_API_URL = os.environ.get(
+    "DEEPSEEK_API_URL",
+    "https://api.deepseek.com/chat/completions",
+)
+BTG_AGENT_MODEL = os.environ.get("BTG_AGENT_MODEL", "deepseek-v4-flash")
 
 # --- local MLX backend -------------------------------------------------
 

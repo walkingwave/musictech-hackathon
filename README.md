@@ -44,6 +44,24 @@ Open http://127.0.0.1:8000
 Works immediately on the **mock** backend — no model weights, no API key, no network.
 Use it to build and test everything except the audio quality itself.
 
+### DeepSeek chat agent
+
+The Studio ask bar calls `/api/interpret`, which uses DeepSeek when
+`DEEPSEEK_API_KEY` is set and falls back to the offline rules parser when it is
+not. DeepSeek only returns a structured generation plan; the app still executes
+the existing `/api/generate` pipeline and SA3 calls itself.
+
+1. Create a DeepSeek account and API key from the DeepSeek platform.
+2. Add the key to `.env`:
+
+```bash
+DEEPSEEK_API_KEY=your_key_here
+BTG_AGENT_PROVIDER=deepseek
+BTG_AGENT_MODEL=deepseek-v4-flash
+```
+
+Restart the backend after editing `.env`.
+
 ## Backends
 
 Pick one in the UI header, per generation. Availability is detected live, so a
@@ -54,21 +72,48 @@ which one actually ran.
 | Backend | Setup | Notes |
 |---|---|---|
 | `mock` | none | Returns the guide with noise. For UI work and offline demos. |
-| `local` | `uv sync --extra local` + HF access | `small-music` 0.6B. Free, offline, runs on Apple Silicon. |
+| `local` | Stable Audio 3 optimized MLX checkout | Free, offline, runs on Apple Silicon. |
 | `api` | `STABILITY_API_KEY` in `.env` | `large` 2.7B. Best quality, uses credits, needs network. |
 
-### Local backend: model access
+### Local backend: Stable Audio 3 MLX
 
-The weights are **gated** on Hugging Face — an anonymous download returns `401`.
+The local backend shells out to Stability AI's optimized MLX implementation. It
+is Apple-Silicon-native and stores its own virtualenv and weights outside this
+repo. By default this app looks for it at:
 
-1. Accept the licence at https://huggingface.co/stabilityai/stable-audio-3-small-music
-2. Create a token at https://huggingface.co/settings/tokens
-3. `uv run hf auth login`
-4. `uv sync --extra local`
+```text
+../sa3-mlx-src/optimized/mlx
+```
 
-Do this early. It is the one setup step that can block on someone else approving you.
+Install it with:
 
-`medium` (1.4B) is **not** an option on a Mac: it requires CUDA and Flash Attention 2.
+```bash
+cd ..
+git clone --depth=1 https://github.com/Stability-AI/stable-audio-3 sa3-mlx-src
+cd sa3-mlx-src/optimized/mlx
+./install.sh -y
+```
+
+If you install it somewhere else, set:
+
+```bash
+BTG_MLX_ROOT=/absolute/path/to/stable-audio-3/optimized/mlx
+```
+
+The app auto-detects whichever MLX weights are present and prefers `medium`
+when available, then `sm-music`. To force the faster model:
+
+```bash
+BTG_MLX_DIT=sm-music
+```
+
+Verify through this app's local backend:
+
+```bash
+uv run btg --input samples/fixtures/amin_100.wav --part bass --backend local
+```
+
+Then start this app and select the `local` backend.
 
 ## CLI
 

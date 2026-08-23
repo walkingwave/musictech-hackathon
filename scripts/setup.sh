@@ -43,7 +43,8 @@ uv run python scripts/make_test_vocals.py
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo "==> wrote .env — add STABILITY_API_KEY to enable the api backend"
+  echo "==> wrote .env — add STABILITY_API_KEY for the api backend"
+  echo "                 add DEEPSEEK_API_KEY for the chat agent"
 fi
 
 cat <<'DONE'
@@ -57,12 +58,17 @@ Setup complete.
 
 Both work right now on the `mock` backend — no model weights or API key needed.
 
-To enable the local Stable Audio 3 model (weights are gated on Hugging Face):
+To enable the local Stable Audio 3 MLX backend:
 
-  1. accept the licence at
-     https://huggingface.co/stabilityai/stable-audio-3-small-music
-  2. create a token at https://huggingface.co/settings/tokens
-  3. uv run hf auth login
-  4. uv sync --extra local
+  1. clone Stability's repo next to this one:
+       git clone --depth=1 https://github.com/Stability-AI/stable-audio-3 ../sa3-mlx-src
+  2. install the MLX backend:
+       cd ../sa3-mlx-src/optimized/mlx && ./install.sh -y
+  3. optionally set BTG_MLX_ROOT in .env if you installed it somewhere else
+  4. verify:
+       uv run btg --input samples/fixtures/amin_100.wav --part bass --backend local
+
+To enable the DeepSeek chat agent, create a DeepSeek API key and set
+DEEPSEEK_API_KEY in .env. Without it, /api/interpret falls back to rules.
 
 DONE
