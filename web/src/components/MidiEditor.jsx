@@ -341,6 +341,8 @@ export default function MidiEditor({
           Clear
         </button>
 
+        {clip.midiUrl && <a className="t-btn" href={clip.midiUrl} download={`${track.name}.mid`}>Download MIDI</a>}
+
         <button
           className="t-btn"
           disabled={busy || !notes.length || !track.instrument}

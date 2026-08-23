@@ -39,7 +39,7 @@ BPM_RANGE = (70.0, 160.0)
 TEMPO_STD_BPM = 2.0
 
 
-def analyze(audio: np.ndarray, sr: int) -> Analysis:
+def analyze(audio: np.ndarray, sr: int, notes: list[melody.Note] | None = None) -> Analysis:
     """Vocal audio -> tempo, downbeat, key and a per-bar chord grid."""
     mono = librosa.to_mono(audio) if audio.ndim > 1 else audio
 
@@ -50,7 +50,7 @@ def analyze(audio: np.ndarray, sr: int) -> Analysis:
     onset_env = librosa.onset.onset_strength(y=mono, sr=sr)
 
     # Pitch-tracked once and shared by key detection and chord estimation.
-    notes = melody.track(mono, sr)
+    notes = notes if notes is not None else melody.track(mono, sr)
 
     bpm, beat_times = _estimate_tempo(onset_env, sr)
     downbeat = _estimate_downbeat(onset_env, sr, beat_times)

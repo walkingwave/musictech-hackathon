@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 
-// RECORD / UPLOAD as the two big spec-sheet buttons, then a file row with a
-// (static) waveform once a vocal is loaded. Hands blob + filename to onSubmit.
+// Record/upload one unaccompanied hum, then hand its audio to onSubmit.
 export default function Recorder({ onSubmit, fileName }) {
   const recorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
@@ -53,11 +52,11 @@ export default function Recorder({ onSubmit, fileName }) {
       <div className="big-buttons">
         <button type="button" onClick={toggleRecord}>
           <span className={`dot${recording ? ' rec' : ''}`} />
-          {recording ? 'Stop' : 'Record'}
+          {recording ? 'Stop' : 'Record Hum'}
         </button>
         <label className="upload">
           <span className="box" />
-          Upload
+          Upload Hum
           <input
             type="file"
             accept="audio/*"
@@ -88,7 +87,7 @@ export default function Recorder({ onSubmit, fileName }) {
         <div className="file-row">
           <div className="file-meta">
             <div className="file-name">{fileName}</div>
-            <div className="file-spec">loaded · analyzed</div>
+            <div className="file-spec">hum loaded · analyzed</div>
           </div>
           <div className="file-wave">
             <Waveform />

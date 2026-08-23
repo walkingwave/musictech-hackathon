@@ -28,6 +28,7 @@ import soundfile as sf
 
 from .config import SAMPLE_RATE, SESSIONS_DIR
 from .models import Analysis, Arrangement, StemResult
+from .melody import Note
 
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
@@ -196,6 +197,20 @@ class Session:
         meta["analysis"] = analysis.to_dict()
         self._write_meta(meta)
 
+    def save_hum_notes(self, notes: list[Note], tracking: dict | None = None) -> None:
+        """Persist note events and bounded tracker provenance for reproduction."""
+        meta = self._read_meta()
+        meta["hum_notes"] = [
+            {"pitch": note.pitch, "start": note.start, "end": note.end} for note in notes
+        ]
+        if tracking is not None:
+            meta["pitch_tracking"] = tracking
+        self._write_meta(meta)
+
+    @property
+    def hum_notes(self) -> list[Note]:
+        return [Note(**note) for note in self._read_meta().get("hum_notes", [])]
+
     @property
     def arrangement(self) -> Arrangement:
         """Session-wide style and length. Empty until the first generation."""
@@ -209,6 +224,12 @@ class Session:
     def save_stem(self, result: StemResult) -> None:
         meta = self._read_meta()
         meta["stems"][result.name] = result.to_dict()
+        self._write_meta(meta)
+
+    def save_transform(self, name: str, transform: dict) -> None:
+        """Persist MIDI-only output separately from audio stems."""
+        meta = self._read_meta()
+        meta.setdefault("transforms", {})[name] = transform
         self._write_meta(meta)
 
     def to_dict(self) -> dict:

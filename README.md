@@ -2,9 +2,10 @@
 
 Project Track: Stable Audio
 
-Record a vocal melody, get individual backing stems — bassline, piano chords, drums,
-vocal harmony — each locked to the original's tempo, key and harmony. Export the
-stems and MIDI to a DAW.
+Record or upload a **monophonic hum**, turn it into a clear, editable melody or
+bassline MIDI clip, then render that exact musical guide as usable audio for Stable
+Audio 3. Export the original hum, transformed MIDI, guide WAV, and final audio to a
+DAW.
 
 See [PLAN.md](PLAN.md) for the full design and rationale.
 
@@ -14,17 +15,22 @@ Stable Audio 3 has no melody or chord conditioning and no stem output, so we can
 just hand it the vocal and ask for a bassline. Instead we build a **guide track**:
 
 ```
-vocal.wav
-  1. ANALYZE       BPM, downbeat, key, per-bar chords            analysis.py
-  2. ARRANGE       chord grid -> MIDI for the requested part     arrange.py
-  3. RENDER GUIDE  MIDI -> rough numpy synth audio               render_guide.py
-  4. GENERATE      SA3 audio-to-audio, init_audio = guide        sa3_backend.py
-  5. ALIGN         time-stretch and phase-lock to the grid       align.py
+hum.wav
+  1. ANALYZE       voiced note events, BPM, key, and beat/bar grid
+  2. TRANSFORM     hum contour -> melody MIDI or bassline MIDI
+  3. REVIEW        user may correct tempo/key and edit the MIDI notes
+  4. RENDER GUIDE  transformed MIDI -> clear synthetic guide WAV
+  5. GENERATE      Stable Audio 3 audio-to-audio, init_audio = guide
+  6. ALIGN         time-stretch and phase-lock output to the guide/grid
 ```
 
-The guide is deliberately ugly — its only job is to be *structurally* right. Its
-rhythm and harmony survive in the model's noised latent, so what comes back has the
-correct skeleton and a real instrument's timbre.
+The transformed MIDI is the primary deliverable: it must be musically legible and
+usable without generation. The guide WAV renders those same notes, so Stable Audio
+receives explicit pitch and rhythm rather than raw vocal audio. For a **melody**
+request, the system preserves the hummed contour, phrase timing, and rests. For a
+**bassline** request, it moves that contour into a playable bass register and
+simplifies it onto the detected/edited harmonic grid. The existing backing-stem
+flow remains available while this becomes the default input experience.
 
 ## Setup
 
@@ -143,6 +149,8 @@ Faster than the UI when tuning prompts and noise values.
 ```bash
 uv run python scripts/make_test_vocals.py           # 18 fixtures with known BPM/key
 
+uv run btg --input samples/fixtures/amin_100.wav --hum-target melody
+uv run btg --input samples/fixtures/amin_100.wav --hum-target bass --style "warm fingered electric bass"
 uv run btg --input samples/fixtures/amin_100.wav --part bass
 uv run btg --input samples/fixtures/amin_100.wav --all --backend local
 uv run btg --input samples/fixtures/amin_100.wav --part bass --style "bossa nova"
