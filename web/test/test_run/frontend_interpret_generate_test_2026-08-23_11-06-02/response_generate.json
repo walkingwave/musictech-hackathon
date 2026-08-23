@@ -1,0 +1,14 @@
+{
+  "part": "bass",
+  "name": "upright-bass",
+  "instrument": "upright bass, pizzicato",
+  "wav_path": "stems/upright-bass.wav",
+  "midi_path": "midi/upright-bass.mid",
+  "backend_used": "mock",
+  "prompt": "upright bass, pizzicato, 99 BPM, A minor, solo bass only, no drums, no vocals, no piano",
+  "noise": 0.8,
+  "seed": 424242,
+  "duration": 19.319002267573698,
+  "n_bars": 8,
+  "audio_url": "/api/session/af1ab8cf032b/audio/stems/upright-bass.wav?v=424242"
+}

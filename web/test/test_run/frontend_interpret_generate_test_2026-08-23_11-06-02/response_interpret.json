@@ -1,0 +1,18 @@
+{
+  "tracks": [
+    {
+      "part": "bass",
+      "name": "Upright Bass",
+      "instrument": "upright bass, pizzicato",
+      "style": ""
+    }
+  ],
+  "style": "",
+  "groove": "straight",
+  "bpm": null,
+  "key": null,
+  "mode": null,
+  "bars": null,
+  "notes": "",
+  "interpreter": "deepseek"
+}

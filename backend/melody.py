@@ -10,66 +10,97 @@ Used by two stages for different reasons, which is why it lives on its own:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import librosa
 import numpy as np
 from scipy.ndimage import median_filter
 
+from . import config
+from .pitch_tracking import Note, TrackingDiagnostics, TrackingFrame, TrackingResult
+
 # Frames below this pyin confidence are treated as unvoiced - breaths,
 # consonants, silence - and produce no note.
-CONFIDENCE_FLOOR = 0.5
+CONFIDENCE_FLOOR = 0.30
 
 # Ignore blips shorter than this. They are usually tracking artifacts
 # during a pitch transition rather than intended notes.
-MIN_DURATION = 0.08
+MIN_DURATION = 0.06
 
 # Vocal range to search. Wider costs time and invites octave errors.
 FMIN_NOTE = "C2"
 FMAX_NOTE = "C6"
 
 
-@dataclass
-class Note:
-    pitch: int  # MIDI note number
-    start: float  # seconds
-    end: float  # seconds
-
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
-
-    @property
-    def pitch_class(self) -> int:
-        return self.pitch % 12
-
-
 # Median-filter window, in frames, applied to the pitch contour before
 # rounding to semitones. Without it, vibrato swinging across a semitone
 # boundary chops a single held note into a stutter of short fragments -
 # which destroys exactly the duration evidence key detection depends on.
-# At the default hop this is roughly 100ms, shorter than any real note
-# but longer than a vibrato cycle.
-SMOOTHING_FRAMES = 9
+# At the default hop this is roughly 58ms: enough to suppress a one-frame
+# octave glitch, but short enough that a deliberately hummed pitch change is
+# not averaged away.
+SMOOTHING_FRAMES = 5
 
 # Same-pitch notes separated by less than this are one note that the
 # tracker briefly lost, not two notes. Mops up residual fragmentation.
-MERGE_GAP = 0.06
+MERGE_GAP = 0.04
+
+
+class PyinTracker:
+    """Current dependency-free tracker, normalized to the shared contract."""
+
+    id = "pyin"
+    version = librosa.__version__
+
+    def track(self, mono: np.ndarray, sr: int) -> TrackingResult:
+        f0, voiced, confidence = librosa.pyin(
+            mono,
+            fmin=float(librosa.note_to_hz(FMIN_NOTE)),
+            fmax=float(librosa.note_to_hz(FMAX_NOTE)), sr=sr,
+        )
+        times = librosa.times_like(f0, sr=sr)
+        usable = voiced & np.isfinite(f0) & (confidence >= CONFIDENCE_FLOOR)
+        frames = [
+            TrackingFrame(
+                time=float(time), f0_hz=float(value) if np.isfinite(value) else None,
+                midi=float(librosa.hz_to_midi(value)) if np.isfinite(value) else None,
+                voiced=bool(is_voiced), confidence=float(score) if np.isfinite(score) else None,
+            )
+            for time, value, is_voiced, score in zip(times, f0, voiced, confidence)
+        ]
+        pitches = _smoothed_pitches(f0, voiced, confidence)
+        segmented, discarded = _segment(pitches, times)
+        notes, merged = _merge_fragments(segmented)
+        diagnostics = TrackingDiagnostics(
+            total_frames=len(frames), voiced_frames=int(np.sum(voiced)),
+            rejected_unvoiced=int(np.sum(~voiced)),
+            rejected_low_confidence=int(np.sum(voiced & ~usable)),
+            segmented_notes=len(segmented), discarded_short_notes=discarded, merged_notes=merged,
+        )
+        if len(notes) < 2:
+            diagnostics.warnings.append("fewer than two stable pitched notes were detected")
+        return TrackingResult(self.id, self.version, notes, frames, diagnostics)
+
+
+def tracker() -> PyinTracker | object:
+    """Select an optional validated tracker, always retaining pYIN fallback."""
+    if config.PITCH_TRACKER in ("basic-pitch", "auto"):
+        try:
+            from .basic_pitch_tracker import BasicPitchTracker
+            return BasicPitchTracker()
+        except RuntimeError:
+            # Optional-model installation/runtime failure must never make a
+            # hum unusable; provenance records that pYIN actually ran.
+            pass
+    return PyinTracker()
+
+
+def track_with_diagnostics(mono: np.ndarray, sr: int) -> TrackingResult:
+    """Pitch-track one hum and retain frame-level evidence for inspection."""
+    return tracker().track(mono, sr)
 
 
 def track(mono: np.ndarray, sr: int) -> list[Note]:
-    """Pitch-track a monophonic vocal into discrete notes."""
-    f0, voiced, confidence = librosa.pyin(
-        mono,
-        fmin=float(librosa.note_to_hz(FMIN_NOTE)),
-        fmax=float(librosa.note_to_hz(FMAX_NOTE)),
-        sr=sr,
-    )
-    times = librosa.times_like(f0, sr=sr)
-    pitches = _smoothed_pitches(f0, voiced, confidence)
-
-    notes = _segment(pitches, times)
-    return _merge_fragments(notes)
+    """Compatibility helper for existing analysis and arranger callers."""
+    return track_with_diagnostics(mono, sr).notes
 
 
 def _smoothed_pitches(f0, voiced, confidence) -> list[int | None]:
@@ -94,40 +125,49 @@ def _smoothed_pitches(f0, voiced, confidence) -> list[int | None]:
     return [int(round(filled[i])) if usable[i] else None for i in range(len(f0))]
 
 
-def _segment(pitches: list[int | None], times: np.ndarray) -> list[Note]:
-    """Runs of equal pitch become notes."""
+def _segment(pitches: list[int | None], times: np.ndarray) -> tuple[list[Note], int]:
+    """Runs of equal pitch become notes, with rejected-fragment accounting."""
     notes: list[Note] = []
+    discarded = 0
     current: int | None = None
     start = 0.0
 
     for i, pitch in enumerate(pitches):
         if pitch != current:
-            if current is not None and times[i] - start >= MIN_DURATION:
-                notes.append(Note(pitch=current, start=start, end=float(times[i])))
+            if current is not None:
+                if times[i] - start >= MIN_DURATION:
+                    notes.append(Note(pitch=current, start=start, end=float(times[i])))
+                else:
+                    discarded += 1
             current = pitch
             start = float(times[i])
 
     # Close the final note, if the clip ends mid-phrase.
-    if current is not None and times[-1] - start >= MIN_DURATION:
-        notes.append(Note(pitch=current, start=start, end=float(times[-1])))
+    if current is not None:
+        if times[-1] - start >= MIN_DURATION:
+            notes.append(Note(pitch=current, start=start, end=float(times[-1])))
+        else:
+            discarded += 1
 
-    return notes
+    return notes, discarded
 
 
-def _merge_fragments(notes: list[Note]) -> list[Note]:
+def _merge_fragments(notes: list[Note]) -> tuple[list[Note], int]:
     """Join same-pitch notes separated by only a tracking dropout."""
     if not notes:
-        return []
+        return [], 0
 
     merged = [notes[0]]
+    merged_count = 0
     for note in notes[1:]:
         previous = merged[-1]
         if note.pitch == previous.pitch and note.start - previous.end <= MERGE_GAP:
             merged[-1] = Note(pitch=previous.pitch, start=previous.start, end=note.end)
+            merged_count += 1
         else:
             merged.append(note)
 
-    return merged
+    return merged, merged_count
 
 
 def duration_histogram(notes: list[Note]) -> np.ndarray:

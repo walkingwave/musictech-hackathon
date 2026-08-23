@@ -19,7 +19,7 @@ import numpy as np
 import pretty_midi
 import soundfile as sf
 
-from . import align, arrange, config, grooves, mix, prompts, render_guide, sa3_backend
+from . import align, arrange, config, grooves, hum_transform, melody, mix as audio_mix, prompts, render_guide, sa3_backend
 from .analysis import analyze
 from .config import SAMPLE_RATE
 from .models import Analysis, Arrangement, Bar, Part, StemResult
@@ -42,8 +42,19 @@ def analyze_vocal(vocal_path) -> tuple[Session, Analysis]:
         sr = SAMPLE_RATE
 
     session = Session.create(audio, sr)
-    analysis = analyze(audio, sr)
+    tracking = melody.track_with_diagnostics(audio, sr)
+    hum_notes = tracking.notes
+    analysis = analyze(audio, sr, notes=hum_notes)
     session.save_analysis(analysis)
+    # Keep enough frame evidence to diagnose a bad take without inflating
+    # meta.json indefinitely for a long recording.
+    frame_step = max(1, math.ceil(len(tracking.frames) / 240))
+    tracking_meta = {
+        **tracking.summary(),
+        "frames": [frame.to_dict() for frame in tracking.frames[::frame_step]],
+        "frame_stride": frame_step,
+    }
+    session.save_hum_notes(hum_notes, tracking=tracking_meta)
 
     log.info(
         "session %s: %.1f BPM, %s %s, %d bars",
@@ -151,7 +162,8 @@ def track_name(session: Session, part: Part, requested: str | None) -> str:
     base = "".join(c for c in (requested or part).lower() if c.isalnum() or c in "-_ ")
     base = "-".join(base.split()) or part
 
-    existing = set(session.to_dict().get("stems", {}))
+    meta = session.to_dict()
+    existing = set(meta.get("stems", {})) | set(meta.get("transforms", {}))
     if base not in existing:
         return base[:40]
     for n in range(2, 100):
@@ -391,7 +403,7 @@ def generate_stem(
     # it to its role, so five stems arriving at "as loud as possible" do not
     # fight — most of what reads as clashing is low-frequency masking plus a
     # level war, and both are fixable deterministically.
-    stem = mix.polish(stem, part)
+    stem = audio_mix.polish(stem, part)
     session.write_audio(session.stem_path(name), stem)
 
     result = StemResult(
@@ -543,6 +555,91 @@ def generate_from_reference(
         duration=len(stem) / SAMPLE_RATE,
         n_bars=max(1, round(duration / analysis.seconds_per_bar)),
     )
+
+
+def transform_hum_to_midi(
+    session: Session,
+    target: str,
+    name: str | None = None,
+    options: hum_transform.TransformOptions | None = None,
+) -> dict:
+    """Create the deterministic hum MIDI deliverable with no audio generation."""
+    if target not in hum_transform.TARGETS:
+        raise ValueError(f"unknown hum target: {target}")
+    analysis = session.analysis
+    name = name or f"hum-{target}"
+    options = options or hum_transform.TransformOptions()
+    midi = hum_transform.transform(session.hum_notes, analysis, target, options)
+    midi_path = session.midi_path(name)
+    midi.write(str(midi_path))
+    beat = analysis.seconds_per_beat
+    notes = [
+        {"pitch": note.pitch, "start": note.start / beat,
+         "length": (note.end - note.start) / beat, "velocity": note.velocity}
+        for instrument in midi.instruments for note in instrument.notes
+    ]
+    duration_beats = max((note["start"] + note["length"] for note in notes), default=4.0)
+    session.save_transform(name, {
+        "part": target, "midi_path": str(midi_path.relative_to(session.root)),
+        "duration_beats": duration_beats, "midi_notes": notes, "transform": options.__dict__,
+        "tracker": session.to_dict().get("pitch_tracking", {}).get("tracker_id", "unknown"),
+    })
+    return {"name": name, "part": target, "midi_path": str(midi_path.relative_to(session.root)),
+            "midi_notes": notes, "duration_beats": duration_beats, "transform": options.__dict__}
+
+
+def prepare_hum_transform(
+    session: Session,
+    target: str,
+    name: str | None = None,
+    options: hum_transform.TransformOptions | None = None,
+) -> tuple[str, pretty_midi.PrettyMIDI, np.ndarray]:
+    """Always write the deterministic MIDI and guide before optional SA3 work."""
+    if target not in hum_transform.TARGETS:
+        raise ValueError(f"unknown hum target: {target}")
+    analysis = session.analysis
+    name = name or f"hum-{target}"
+    midi = hum_transform.transform(session.hum_notes, analysis, target, options)
+    midi.write(str(session.midi_path(name)))
+    guide = render_guide.render(midi, duration=analysis.duration, part=target)
+    session.write_audio(session.guide_path(name), guide)
+    return name, midi, guide
+
+
+def generate_from_hum(
+    session: Session,
+    target: str,
+    prompt: str = "",
+    noise: float | None = None,
+    backend: str | None = None,
+    seed: int | None = None,
+    name: str | None = None,
+    options: hum_transform.TransformOptions | None = None,
+) -> StemResult:
+    """Render a prepared hum MIDI/guide through Stable Audio."""
+    analysis = session.analysis
+    name, _, guide = prepare_hum_transform(session, target, name, options)
+    seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+    noise = noise if noise is not None else config.default_noise(target)
+    midi_path = session.midi_path(name)
+    full_prompt = ", ".join(piece for piece in (
+        prompt.strip(), f"{target} following the supplied MIDI", f"{round(analysis.bpm)} BPM",
+        f"{analysis.key} {analysis.mode}", "solo instrument, no vocals",
+    ) if piece)
+    raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
+        backend_id=backend, prompt=full_prompt, init_audio=guide, noise=noise,
+        duration=analysis.duration, seed=seed,
+    )
+    stem = audio_mix.polish(align.align(raw, guide, target_bpm=analysis.bpm), target)
+    session.write_audio(session.stem_path(name), stem)
+    result = StemResult(
+        part=target, name=name, instrument=prompt, wav_path=str(session.stem_path(name).relative_to(session.root)),
+        midi_path=str(midi_path.relative_to(session.root)), backend_used=backend_used,
+        fallback_error=fallback_error, prompt=full_prompt, noise=noise, seed=seed,
+        duration=len(stem) / SAMPLE_RATE, n_bars=len(analysis.bars),
+    )
+    session.save_stem(result)
+    return result
 
 
 def generate_from_notes(

@@ -56,6 +56,7 @@ export function useProject({ engine, sessionId, setSessionId, studio, onRestored
             seed: c.seed ?? null,
             backendUsed: c.backendUsed ?? null,
             audioUrl: c.audioUrl ?? null,
+            midiUrl: c.midiUrl ?? null,
           })),
         })),
       };
@@ -105,6 +106,7 @@ export function useProject({ engine, sessionId, setSessionId, studio, onRestored
             duration: clip.duration,
             durationBeats: clip.durationBeats,
             notes: clip.notes || [],
+            midiUrl: clip.midiUrl || null,
           });
           continue;
         }

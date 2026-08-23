@@ -23,6 +23,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="btg", description=__doc__)
     parser.add_argument("--input", required=True, help="path to the vocal audio file")
     parser.add_argument("--part", choices=PARTS, help="which backing part to generate")
+    parser.add_argument("--hum-target", choices=("melody", "bass"),
+                        help="transform the recorded hum into this MIDI-guided part")
     parser.add_argument("--all", action="store_true", help="generate every part")
     parser.add_argument("--style", default="", help='free-text style, e.g. "bossa nova"')
     parser.add_argument("--noise", type=float,
@@ -41,13 +43,26 @@ def main() -> int:
     )
     config.ensure_dirs()
 
-    if not args.part and not args.all:
-        parser.error("pass --part <name> or --all")
+    if not args.part and not args.all and not args.hum_target:
+        parser.error("pass --part <name>, --all, or --hum-target")
+    if args.hum_target and (args.part or args.all):
+        parser.error("--hum-target cannot be combined with --part or --all")
 
     session, analysis = pipeline.analyze_vocal(args.input)
     print(f"\nsession {session.id}")
     print(f"  {analysis.bpm:.1f} BPM · {analysis.key} {analysis.mode} · {len(analysis.bars)} bars")
     print(f"  chords: {' '.join(bar.chord for bar in analysis.bars[:8])}")
+
+    if args.hum_target:
+        result = pipeline.generate_from_hum(
+            session, target=args.hum_target, prompt=args.style, noise=args.noise,
+            backend=args.backend, seed=args.seed,
+        )
+        print(f"\n  hum -> {args.hum_target}")
+        print(f"    backend: {result.backend_used}  seed: {result.seed}")
+        print(f"    audio:   {session.root / result.wav_path}")
+        print(f"    midi:    {session.root / result.midi_path}")
+        return 0
 
     parts = list(PARTS) if args.all else [args.part]
     noise_values = [float(v) for v in args.sweep.split(",")] if args.sweep else [args.noise]

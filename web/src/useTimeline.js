@@ -166,6 +166,7 @@ export function useTimeline(sampler) {
         seed: null,
         backendUsed: null,
         startBar: 0,
+        midiUrl: meta.midiUrl ?? null,
       };
       setTracks((prev) => [
         ...prev,
