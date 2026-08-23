@@ -33,6 +33,7 @@ export default function PianoRoll({
   bars = 4,
   beatsPerBar = 4,
   snap = 0.25,
+  onBeginEdit, // snapshot for undo, once per gesture rather than per frame
   activePitches, // Map of pitch -> velocity, from the live MIDI controller
   playhead = null, // beats, or null when not playing
 }) {
@@ -127,6 +128,7 @@ export default function PianoRoll({
     const beat = xToBeat(e.clientX - rect.left);
     const pitch = yToPitch(e.clientY - rect.top);
     const hit = hitTest(beat, pitch);
+    onBeginEdit?.();
 
     if (e.altKey) {
       if (hit) onChange(notes.filter((n) => n.id !== hit.id));

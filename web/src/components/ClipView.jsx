@@ -33,8 +33,13 @@ export default function ClipView({
   const TITLE_H = 15;
   const snap = (t) => (snapSec > 0 ? Math.round(t / snapSec) * snapSec : t);
 
+  // A MIDI clip shows its notes; an audio clip shows its waveform. Both
+  // draw to the same canvas, so a clip that has been rendered still reads
+  // as the notes that produced it rather than switching representation.
+  const isMidi = Array.isArray(clip.notes);
+
   const peaks = useMemo(() => {
-    if (!buffer) return null;
+    if (isMidi || !buffer) return null;
     const sr = buffer.sampleRate;
     const data = buffer.getChannelData(0);
     const startF = Math.floor(clip.offset * sr);
@@ -55,12 +60,41 @@ export default function ClipView({
       out[x * 2 + 1] = max;
     }
     return out;
-  }, [buffer, clip.offset, clip.duration, width]);
+  }, [isMidi, buffer, clip.offset, clip.duration, width]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !peaks) return;
+    if (!canvas) return;
     const h = height - TITLE_H;
+
+    if (isMidi) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = width * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, h);
+
+      const notes = clip.notes || [];
+      if (!notes.length) return;
+      // Scale to the notes actually present, so a two-octave part fills
+      // the lane instead of sitting as a thin band in the middle.
+      const low = Math.min(...notes.map((n) => n.pitch)) - 1;
+      const high = Math.max(...notes.map((n) => n.pitch)) + 1;
+      const span = Math.max(4, high - low);
+      const beats = Math.max(1, clip.durationBeats || notes.reduce((m, n) => Math.max(m, n.start + n.length), 0));
+
+      ctx.fillStyle = '#3b3f52';
+      notes.forEach((n) => {
+        const x = (n.start / beats) * width;
+        const w = Math.max(2, (n.length / beats) * width);
+        const y = h - ((n.pitch - low) / span) * h;
+        ctx.fillRect(x, y - 2, w, 3);
+      });
+      return;
+    }
+
+    if (!peaks) return;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
     canvas.height = h * dpr;
@@ -75,7 +109,7 @@ export default function ClipView({
       const y2 = mid - peaks[x * 2] * (mid - 1);
       ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1));
     }
-  }, [peaks, width, height]);
+  }, [isMidi, clip.notes, clip.durationBeats, peaks, width, height]);
 
   // Timeline seconds from a pointer event, relative to the lane.
   const eventTime = (ev, laneLeft) => (ev.clientX - laneLeft) / pps;
@@ -149,7 +183,7 @@ export default function ClipView({
       onPointerDown={onPointerDown}
     >
       <div className="clip-title" style={{ height: TITLE_H, background: color }}>
-        {clip.part || 'audio'}
+        {clip.part || (isMidi ? 'midi' : 'audio')}
       </div>
       <canvas ref={canvasRef} style={{ width, height: height - TITLE_H, display: 'block' }} />
       {region && (

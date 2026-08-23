@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
+import MidiEditor from './MidiEditor.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
 import { parseRequest, describePlan } from '../parseRequest.js';
 import * as apiClient from '../api.js';
@@ -40,7 +41,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 
 export default function Studio({
   engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
-  onGenerateStem, onGenerateFromReference, sessionId,
+  onGenerateStem, onGenerateFromReference, onRenderMidi, sessionId,
 }) {
   const {
     tracks,
@@ -60,6 +61,9 @@ export default function Studio({
     replaceRegion,
     setTrackProp,
     addTrack,
+    addMidiTrack,
+    setClipNotes,
+    attachBuffer,
     beginGesture,
     undo,
     redo,
@@ -369,6 +373,37 @@ export default function Studio({
     setBusy(false);
   };
 
+  // Render a MIDI clip: its notes become the guide, the track's instrument
+  // prompt becomes the sound. The notes stay on the clip afterwards, so it
+  // can be edited and re-rendered.
+  const renderMidiClip = async (instrument) => {
+    if (!selClip || !selTrack) return;
+    setBusy(true);
+    setStatus(`Rendering ${selTrack.name}…`);
+    try {
+      const result = await onRenderMidi({
+        notes: (selClip.notes || []).map(({ pitch, start, length, velocity }) => ({
+          pitch, start, length, velocity,
+        })),
+        prompt: instrument,
+        name: selTrack.name,
+        bars: Math.max(1, Math.round((selClip.durationBeats || 8) / 4)),
+      });
+      const buffer = await decodeResult(result);
+      beginGesture();
+      attachBuffer(selTrack.id, selClip.id, buffer, {
+        duration: result.duration || buffer.duration,
+        seed: result.seed,
+        backendUsed: result.backend_used,
+        prompt: instrument,
+      });
+      setStatus('');
+    } catch (e) {
+      setStatus(`Failed — ${e.message}`);
+    }
+    setBusy(false);
+  };
+
   const loopActive = !!loop;
   const toggleLoop = () => {
     if (loopActive) setLoop(null);
@@ -492,6 +527,15 @@ export default function Studio({
             onRecord={onRecorded}
             onImport={onImport}
             onAiTrack={generateReferenceTrack}
+            onMidi={() => {
+              const n = tracks.filter((t) => t.kind === 'midi').length + 1;
+              const { trackId, clipId } = addMidiTrack(`MIDI ${n}`, '', {
+                start: 0,
+                duration: secondsPerBar * 4,
+                notes: [],
+              });
+              setSelected({ trackId, clipId });
+            }}
           />
         </div>
       </div>
@@ -570,7 +614,20 @@ export default function Studio({
         </div>
       </div>
 
-      {selClip && selTrack && (
+      {selClip && selTrack && selTrack.kind === 'midi' && (
+        <MidiEditor
+          track={selTrack}
+          clip={selClip}
+          bpm={bpm}
+          busy={busy}
+          onBeginEdit={beginGesture}
+          onNotesChange={(notes) => setClipNotes(selTrack.id, selClip.id, notes)}
+          onInstrument={(value) => setTrackProp(selTrack.id, 'instrument', value)}
+          onRender={renderMidiClip}
+        />
+      )}
+
+      {selClip && selTrack && selTrack.kind !== 'midi' && (
         <ClipInspector
           track={selTrack}
           clip={selClip}
@@ -629,7 +686,7 @@ function AskBar({ busy, onRun, status }) {
 
 // "+ Track" with the four ways to get audio onto the timeline. The AI
 // option needs a reference track, so it is disabled until one exists.
-function AddTrackMenu({ tracks, busy, onEmpty, onRecord, onImport, onAiTrack }) {
+function AddTrackMenu({ tracks, busy, onEmpty, onRecord, onImport, onAiTrack, onMidi }) {
   const [open, setOpen] = useState(false);
   const [ai, setAi] = useState(false);
   const withAudio = tracks.filter((t) => t.clips.length > 0);
@@ -662,6 +719,14 @@ function AddTrackMenu({ tracks, busy, onEmpty, onRecord, onImport, onAiTrack }) 
               }}
             />
           </label>
+          <button
+            onClick={() => {
+              onMidi();
+              setOpen(false);
+            }}
+          >
+            MIDI instrument track…
+          </button>
           <button
             disabled={!withAudio.length}
             title={withAudio.length ? '' : 'needs an existing track to reference'}

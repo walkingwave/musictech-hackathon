@@ -133,6 +133,80 @@ export function useTimeline() {
     return id;
   }, [beginGesture]);
 
+  // A MIDI track: its clip carries notes rather than audio, and stays
+  // silent until rendered. The instrument prompt lives on the track, so
+  // every clip on it is rendered with the same sound.
+  const addMidiTrack = useCallback(
+    (name, instrument, meta = {}) => {
+      const trackId = uid('trk');
+      const clipId = uid('clip');
+      beginGesture();
+      const clip = {
+        id: clipId,
+        start: meta.start ?? 0,
+        offset: 0,
+        duration: meta.duration ?? 8,
+        // Length in beats is what the piano roll and the backend speak in;
+        // `duration` stays in seconds for the timeline itself.
+        durationBeats: meta.durationBeats ?? 16,
+        notes: meta.notes ?? [],
+        part: null,
+        prompt: instrument,
+        seed: null,
+        backendUsed: null,
+        startBar: 0,
+      };
+      setTracks((prev) => [
+        ...prev,
+        {
+          id: trackId,
+          name,
+          kind: 'midi',
+          instrument,
+          muted: false,
+          soloed: false,
+          volume: 1,
+          clips: [clip],
+        },
+      ]);
+      return { trackId, clipId };
+    },
+    [beginGesture],
+  );
+
+  // Replace a MIDI clip's notes. Not a history step per edit — the piano
+  // roll calls this on every drag frame — so callers snapshot on
+  // pointer-down instead, the same way clip dragging does.
+  const setClipNotes = useCallback((trackId, clipId, notes) => {
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, notes } : c)) }
+          : t,
+      ),
+    );
+  }, []);
+
+  // Attach rendered audio to an existing clip, so a MIDI clip becomes
+  // audible without losing the notes that produced it.
+  const attachBuffer = useCallback((trackId, clipId, buffer, meta = {}) => {
+    buffersRef.current[clipId] = buffer;
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? {
+              ...t,
+              clips: t.clips.map((c) =>
+                c.id === clipId
+                  ? { ...c, duration: meta.duration ?? buffer.duration, ...meta }
+                  : c,
+              ),
+            }
+          : t,
+      ),
+    );
+  }, []);
+
   // Convenience: create a track for a part and drop one clip on it.
   const addTrackWithClip = useCallback(
     (name, kind, buffer, meta = {}) => {
@@ -497,6 +571,9 @@ export function useTimeline() {
     addTrack,
     addClip,
     addTrackWithClip,
+    addMidiTrack,
+    setClipNotes,
+    attachBuffer,
     moveClip,
     updateClip,
     splitClip,

@@ -194,9 +194,10 @@ export default function App() {
     [sessionId, backend, resetSession, ensureSession],
   );
 
-  // Played notes -> a generated instrument, dropped onto the timeline as a
-  // clip. Creates the session if this is the first thing the user does.
-  const createInstrument = useCallback(
+  // Render a MIDI clip's notes with its instrument prompt. Creates the
+  // session if this is the first thing the user does, so the instrument
+  // flow works as a starting point and not only as an addition.
+  const renderMidi = useCallback(
     async ({ notes, prompt, name, bars: clipBars }) => {
       const result = await apiClient.generateFromMidi({
         session_id: sessionId,
@@ -210,21 +211,25 @@ export default function App() {
         mode: studioMode,
       });
       if (!sessionId) setSessionId(result.session_id);
-
-      const buffer = await engine
-        .context()
-        .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
-      engine.addTrackWithClip(result.name, 'audio', buffer, {
-        start: 0,
-        prompt: result.instrument,
-        seed: result.seed,
-        backendUsed: result.backend_used,
-        duration: result.duration || buffer.duration,
-      });
-      setView('studio');
       return result;
     },
-    [sessionId, backend, studioBpm, studioKey, studioMode, engine],
+    [sessionId, backend, studioBpm, studioKey, studioMode],
+  );
+
+  // Describing an instrument creates an empty MIDI track for it; the notes
+  // get written in the studio, against the rest of the arrangement.
+  const createInstrument = useCallback(
+    ({ name, prompt }) => {
+      const secondsPerBar = (60 / (studioBpm || 100)) * 4;
+      engine.addMidiTrack(name, prompt, {
+        start: 0,
+        duration: secondsPerBar * 4,
+        durationBeats: 16,
+        notes: [],
+      });
+      setView('studio');
+    },
+    [engine, studioBpm],
   );
 
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
@@ -251,17 +256,8 @@ export default function App() {
 
       {view === 'instrument' ? (
         <InstrumentView
-          bpm={studioBpm}
-          bars={bars}
-          busy={generating}
-          onGenerate={async (spec) => {
-            setGenerating(true);
-            try {
-              return await createInstrument(spec);
-            } finally {
-              setGenerating(false);
-            }
-          }}
+          onCreate={createInstrument}
+          existing={engine.tracks.filter((t) => t.kind === 'midi')}
         />
       ) : view === 'input' ? (
         <InputView
@@ -292,6 +288,7 @@ export default function App() {
           onMode={setStudioMode}
           onGenerateStem={studioGenerate}
           onGenerateFromReference={studioGenerateFromReference}
+          onRenderMidi={renderMidi}
           sessionId={sessionId}
         />
       )}
