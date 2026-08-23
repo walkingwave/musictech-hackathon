@@ -38,11 +38,22 @@ DEFAULT_PITCHES = (36, 48, 60, 72, 84)  # C2 C3 C4 C5 C6
 # truncates to the MIDI note's length anyway.
 SAMPLE_SECONDS = 3.0
 
-# Measured by generating C2/C3/C4 across a sweep and reading back the
-# fundamental: 0.6 landed every pitch exactly, while 0.85 came back +24,
-# +12, +0. The model drifts by whole octaves when given too much freedom,
-# even with a single sustained note to follow.
-SAMPLE_NOISE = 0.6
+# High on purpose. The guide is a sawtooth, and at low divergence the model
+# returns that sawtooth with a polish rather than an instrument: measured
+# against flute, cello and piano prompts at 0.6, every output correlated
+# 0.96-0.98 with the guide's spectrum and the three differed from each
+# other by 0.02 — indistinguishable. At 0.85 they differ by 0.81.
+#
+# The cost is pitch: at 0.85 the model drifts, sometimes by an octave. That
+# is affordable only because each sample's true pitch is measured after the
+# fact and the sampler transposes from it (see detect_pitch). Do not lower
+# this to fix a tuning problem — it trades the instrument away for it.
+SAMPLE_NOISE = 0.85
+
+# Past this much drift, transposing back is a big enough stretch to sound
+# obviously slowed or sped up, so the sample is regenerated instead.
+MAX_DRIFT = 6
+RETRIES = 2
 
 
 def instrument_id(prompt: str) -> str:
@@ -98,20 +109,39 @@ def generate_samples(
 
         if force or not path.exists():
             guide = _one_note_guide(pitch, seconds)
-            # Seeds vary per pitch: one seed across the set produces
-            # samples that share artifacts and sound cloned rather than
-            # like one instrument recorded across its range.
-            audio, backend_used = sa3_backend.generate_with_fallback(
-                backend_id=backend,
-                prompt=f"{prompt}, single sustained note, one shot, no reverb tail",
-                init_audio=guide,
-                noise=SAMPLE_NOISE,
-                duration=seconds,
-                seed=(seed + index) if seed is not None else None,
-            )
-            audio = _trim_and_fade(audio)
+            best = None
+
+            for attempt in range(RETRIES + 1):
+                # Seeds vary per pitch and per attempt: one seed across the
+                # set produces samples that share artifacts and sound cloned
+                # rather than like one instrument across its range.
+                offset = index + attempt * 101
+                audio, backend_used = sa3_backend.generate_with_fallback(
+                    backend_id=backend,
+                    prompt=f"{prompt}, single sustained note, one shot, no reverb tail",
+                    init_audio=guide,
+                    noise=SAMPLE_NOISE,
+                    duration=seconds,
+                    seed=(seed + offset) if seed is not None else None,
+                )
+                audio = _trim_and_fade(audio)
+                actual = detect_pitch(audio) or pitch
+                drift = abs(actual - pitch)
+
+                if best is None or drift < best[2]:
+                    best = (audio, actual, drift)
+                if drift <= MAX_DRIFT:
+                    break
+                log.info("pitch %d drifted %+d, retrying", pitch, actual - pitch)
+
+            audio, actual, drift = best
+            if drift:
+                audio = _trim_and_fade(_retune(audio, pitch - actual, seconds))
             sf.write(path, audio, config.SAMPLE_RATE)
-            log.info("sampled %s at pitch %d via %s", instrument_id(prompt), pitch, backend_used)
+            log.info(
+                "sampled %s at %d (sounds %d) via %s",
+                instrument_id(prompt), pitch, actual, backend_used,
+            )
 
         actual = detect_pitch(sf.read(path, dtype="float32")[0])
         if actual is not None and actual != pitch:
@@ -147,6 +177,38 @@ def detect_pitch(audio: np.ndarray) -> int | None:
 
     peak = freqs[band][int(np.argmax(spectrum[band]))]
     return int(round(float(librosa.hz_to_midi(peak))))
+
+
+def _retune(audio: np.ndarray, semitones: float, seconds: float) -> np.ndarray:
+    """Resample so the note actually sounds the pitch it was asked for.
+
+    The model drifts under the divergence needed to get a real timbre, and
+    correcting it here is better than leaving it to the sampler: a sample
+    that sounds a major sixth away from its slot forces every note played
+    from it through the same large stretch, whereas correcting once at
+    generation leaves the set evenly spaced and the stretches small.
+
+    Plain resampling rather than a phase-vocoder shift. These are sustained
+    single notes that get looped anyway, so the length change does not
+    matter, and resampling keeps the timbre clean where a vocoder smears it.
+    """
+    if abs(semitones) < 0.5:
+        return audio
+
+    ratio = 2 ** (semitones / 12)
+    source = np.arange(len(audio), dtype=np.float64)
+    target = np.arange(0, len(audio), ratio, dtype=np.float64)
+    shifted = np.interp(target, source, audio).astype(np.float32)
+
+    want = int(seconds * config.SAMPLE_RATE)
+    if len(shifted) >= want:
+        return shifted[:want]
+    # Shifting down leaves it short; loop the sustain to fill rather than
+    # padding with silence, which would end the note early.
+    tail = shifted[len(shifted) // 4 :]
+    while len(shifted) < want and len(tail):
+        shifted = np.concatenate([shifted, tail])
+    return shifted[:want]
 
 
 def _trim_and_fade(audio: np.ndarray, threshold: float = 0.02) -> np.ndarray:

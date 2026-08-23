@@ -4,6 +4,7 @@ import { blobToWav } from './wav.js';
 import { useTimeline } from './useTimeline.js';
 import { useInstruments } from './useInstruments.js';
 import { useSampler } from './useSampler.js';
+import { useProject } from './useProject.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
 import Studio from './components/Studio.jsx';
@@ -38,6 +39,23 @@ export default function App() {
 
   // MIDI notes are stored in beats, so playback needs the current tempo.
   useEffect(() => engine.setBpm(studioBpm), [engine, studioBpm]);
+
+  // Reload used to start from nothing. The project now restores itself:
+  // metadata from localStorage, audio re-fetched from the backend, which
+  // still holds every stem.
+  const project = useProject({
+    engine,
+    sessionId,
+    setSessionId,
+    studio: {
+      bpm: studioBpm, key: studioKey, mode: studioMode,
+      setBpm: setStudioBpm, setKey: setStudioKey, setMode: setStudioMode,
+    },
+    onRestored: (saved) => {
+      if (saved.tracks?.length) setView('studio');
+      flash('Project restored');
+    },
+  });
   const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
   const vocalAddedRef = useRef(false);
 
@@ -167,6 +185,7 @@ export default function App() {
           backendUsed: result.backend_used,
           duration: result.duration || buffer.duration,
           startBar: 0,
+          audioUrl: result.audio_url,
         });
       }
       setView('studio');

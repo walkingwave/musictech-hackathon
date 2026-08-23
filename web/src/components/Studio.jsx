@@ -304,6 +304,7 @@ export default function Studio({
         seed: result.seed,
         backendUsed: result.backend_used,
         duration: result.duration || buffer.duration,
+        audioUrl: result.audio_url,
       });
       setStatus('');
     } catch (e) {
@@ -360,6 +361,7 @@ export default function Studio({
         });
         const buffer = await decodeResult(result);
         addTrackWithClip(label[0].toUpperCase() + label.slice(1), part, buffer, {
+          audioUrl: result.audio_url,
           start: 0,
           part,
           prompt: style,
@@ -653,6 +655,13 @@ export default function Studio({
           instruments={instruments}
           sampler={sampler}
           onLoadInstrument={(i) => loadInstrument(selTrack, i)}
+          onLengthChange={(beats) => {
+            const secondsPerBeat = 60 / (bpm || 100);
+            updateClip(selTrack.id, selClip.id, {
+              durationBeats: beats,
+              duration: beats * secondsPerBeat,
+            });
+          }}
           onCreateInstrument={onCreateInstrument}
           onRender={renderMidiClip}
         />

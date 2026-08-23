@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import PianoRoll from './PianoRoll.jsx';
-import { useMidiInput } from '../useMidiInput.js';
 import InstrumentSlot from './InstrumentSlot.jsx';
+import { useMidiInput } from '../useMidiInput.js';
 
 // The piano roll, docked at the bottom of the studio for whichever MIDI
-// clip is selected. Notes here are the guide track: Stable Audio 3 keeps
-// the performance and supplies only the sound described by the track's
-// instrument prompt.
+// clip is selected. Notes play through the track's sampled instrument, so
+// what you hear while editing is what the timeline will play.
 
 let counter = 0;
 const uid = () => `n-${++counter}`;
+
+const SNAPS = [
+  { id: 'bar', label: 'Bar', value: 4 },
+  { id: '1/2', label: '1/2', value: 2 },
+  { id: '1/4', label: '1/4', value: 1 },
+  { id: '1/8', label: '1/8', value: 0.5 },
+  { id: '1/16', label: '1/16', value: 0.25 },
+  { id: '1/32', label: '1/32', value: 0.125 },
+  { id: 'off', label: 'Off', value: 0.0001 },
+];
 
 export default function MidiEditor({
   track,
@@ -19,31 +28,52 @@ export default function MidiEditor({
   onNotesChange,
   onBeginEdit,
   onRender,
+  onLengthChange,
   instruments,
   sampler,
   onLoadInstrument,
 }) {
   const [recording, setRecording] = useState(false);
-  const [playhead, setPlayhead] = useState(null);
+  const [playing, setPlaying] = useState(false);
+  const [playhead, setPlayhead] = useState(0);
+  const [snapId, setSnapId] = useState('1/16');
+  const [countIn, setCountIn] = useState(true);
 
   const beatsPerBar = 4;
   const secondsPerBeat = 60 / (bpm || 100);
-  const bars = Math.max(1, Math.round(clip.durationBeats || 8) / beatsPerBar);
+  const totalBeats = clip.durationBeats || 16;
+  const bars = Math.max(1, Math.round(totalBeats / beatsPerBar));
+  const snap = SNAPS.find((s) => s.id === snapId)?.value ?? 0.25;
+
+  const notes = clip.notes || [];
+  // Read through a ref inside callbacks: a note recorded mid-take must
+  // append to the current list, not the one captured when recording began.
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+
+  // Where the transport started, and when, so position comes from the
+  // clock rather than being accumulated frame by frame (which drifts).
+  const originRef = useRef(0);
   const startedAtRef = useRef(0);
+  const voicesRef = useRef(new Map());
+  const scheduledRef = useRef([]);
   const ctxRef = useRef(null);
 
-  // Notes currently sounding, so each can be released on key-up.
-  const voicesRef = useRef(new Map());
+  const audio = useCallback(() => {
+    if (sampler?.context) return sampler.context();
+    if (!ctxRef.current) ctxRef.current = new AudioContext();
+    return ctxRef.current;
+  }, [sampler]);
 
-  // Key down: start the note and hold it. Once the track's instrument is
-  // sampled this is the real sound, not an approximation of it — the same
-  // sampler the timeline plays through. Until then, a plain tone, so the
-  // keyboard still responds while an instrument is being sampled.
+  const hasInstrument = !!(track.instrument && sampler?.isLoaded(track.instrument));
+
+  // --- monitoring --------------------------------------------------------
+
   const noteOn = useCallback(
     ({ pitch, velocity = 90 }) => {
       voicesRef.current.get(pitch)?.stop();
 
-      if (track.instrument && sampler?.isLoaded(track.instrument)) {
+      if (hasInstrument) {
         const voice = sampler.noteOn(track.instrument, pitch, { gain: velocity / 127 });
         if (voice) {
           voicesRef.current.set(pitch, voice);
@@ -51,8 +81,9 @@ export default function MidiEditor({
         }
       }
 
-      if (!ctxRef.current) ctxRef.current = new AudioContext();
-      const ctx = ctxRef.current;
+      // Plain tone, so the keyboard still responds before an instrument is
+      // loaded or while one is being sampled.
+      const ctx = audio();
       ctx.resume();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -72,7 +103,7 @@ export default function MidiEditor({
         },
       });
     },
-    [track.instrument, sampler],
+    [hasInstrument, sampler, track.instrument, audio],
   );
 
   const noteOff = useCallback(({ pitch }) => {
@@ -80,23 +111,34 @@ export default function MidiEditor({
     voicesRef.current.delete(pitch);
   }, []);
 
-  // Stop everything if the editor closes or the track changes, so a note
-  // held at that moment does not sound forever.
-  useEffect(() => () => {
-    voicesRef.current.forEach((v) => v.stop());
-    voicesRef.current.clear();
-  }, [track.id]);
+  // A short audition when a note is added or dragged to a new pitch.
+  const preview = useCallback(
+    (pitch, velocity = 90) => {
+      if (hasInstrument) {
+        const ctx = audio();
+        ctx.resume();
+        sampler.play(track.instrument, pitch, ctx.currentTime, 0.4, { gain: velocity / 127 });
+        return;
+      }
+      noteOn({ pitch, velocity });
+      window.setTimeout(() => noteOff({ pitch }), 200);
+    },
+    [hasInstrument, sampler, track.instrument, audio, noteOn, noteOff],
+  );
 
-  // The played note itself arrives on release, when its length is known.
+  // A played note lands here on release, when its length is finally known.
+  // It is placed relative to where the playhead was when recording began,
+  // so a part can be built up a phrase at a time from anywhere in the clip.
   const onPlayedNote = useCallback(
     ({ pitch, velocity, startedAt, endedAt }) => {
       if (!recording) return;
-      const snap = (b) => Math.max(0, Math.round(b / 0.25) * 0.25);
-      const start = snap((startedAt - startedAtRef.current) / 1000 / secondsPerBeat);
-      const length = Math.max(0.25, snap((endedAt - startedAt) / 1000 / secondsPerBeat));
-      onNotesChange([...(clip.notes || []), { id: uid(), pitch, velocity, start, length }]);
+      const snapTo = (b) => Math.max(0, Math.round(b / snap) * snap);
+      const offset = (startedAt - startedAtRef.current) / 1000 / secondsPerBeat;
+      const start = snapTo(originRef.current + Math.max(0, offset));
+      const length = Math.max(snap, snapTo((endedAt - startedAt) / 1000 / secondsPerBeat));
+      onNotesChange([...notesRef.current, { id: uid(), pitch, velocity, start, length }]);
     },
-    [recording, secondsPerBeat, clip.notes, onNotesChange],
+    [recording, secondsPerBeat, snap, onNotesChange],
   );
 
   const { devices, active, error, panic } = useMidiInput({
@@ -105,83 +147,213 @@ export default function MidiEditor({
     onNoteOff: noteOff,
   });
 
+  // --- transport ---------------------------------------------------------
+
+  const stopAll = useCallback(() => {
+    scheduledRef.current.forEach((s) => {
+      try {
+        s.stop();
+      } catch {
+        /* already finished */
+      }
+    });
+    scheduledRef.current = [];
+    voicesRef.current.forEach((v) => v.stop());
+    voicesRef.current.clear();
+  }, []);
+
+  const stop = useCallback(() => {
+    setPlaying(false);
+    setRecording(false);
+    panic();
+    stopAll();
+  }, [panic, stopAll]);
+
+  // One effect drives play and record alike: they are the same transport,
+  // differing only in whether incoming notes are captured.
   useEffect(() => {
-    if (!recording) {
-      setPlayhead(null);
-      return undefined;
+    if (!playing && !recording) return undefined;
+
+    const ctx = audio();
+    ctx.resume();
+    const lead = recording && countIn ? beatsPerBar * secondsPerBeat : 0;
+    const from = originRef.current;
+    startedAtRef.current = performance.now() + lead * 1000;
+    const audioStart = ctx.currentTime + lead;
+
+    // Play the notes already there, so recording is played *along with*
+    // the part rather than into silence.
+    if (hasInstrument) {
+      notesRef.current.forEach((n) => {
+        const at = (n.start - from) * secondsPerBeat;
+        const length = n.length * secondsPerBeat;
+        if (at + length <= 0) return;
+        const source = sampler.play(
+          track.instrument,
+          n.pitch,
+          audioStart + Math.max(0, at),
+          length + Math.min(0, at),
+          { gain: (n.velocity ?? 90) / 127 },
+        );
+        if (source) scheduledRef.current.push(source);
+      });
     }
-    onBeginEdit();
-    startedAtRef.current = performance.now();
+
     let frame;
     const tick = () => {
-      const beats = (performance.now() - startedAtRef.current) / 1000 / secondsPerBeat;
-      if (beats >= bars * beatsPerBar) {
-        setRecording(false);
-        panic();
+      const elapsed = (performance.now() - startedAtRef.current) / 1000 / secondsPerBeat;
+      const position = from + Math.max(0, elapsed);
+      if (position >= totalBeats) {
+        stop();
+        setPlayhead(from);
         return;
       }
-      setPlayhead(beats);
+      setPlayhead(position);
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [recording, secondsPerBeat, bars, panic, onBeginEdit]);
 
-  const notes = clip.notes || [];
+    return () => {
+      cancelAnimationFrame(frame);
+      stopAll();
+    };
+    // The start position is read once on purpose: it should not restart
+    // the transport if the playhead state changes mid-take.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, recording]);
+
+  // Release anything sounding when the editor closes or the track changes.
+  useEffect(() => () => stopAll(), [track.id, stopAll]);
+
+  // Space toggles playback, as everywhere else in the app.
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.code !== 'Space') return;
+      e.preventDefault();
+      if (playing || recording) stop();
+      else {
+        stopAll();
+        setPlaying(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [playing, recording, stop, stopAll]);
+
+  const scrub = (beat) => {
+    const clamped = Math.max(0, Math.min(beat, totalBeats));
+    originRef.current = clamped;
+    setPlayhead(clamped);
+  };
+
+  const position = `${Math.floor(playhead / beatsPerBar) + 1}.${
+    Math.floor(playhead % beatsPerBar) + 1
+  }`;
 
   return (
     <div className="midi-editor">
       <div className="midi-bar">
         <span className="midi-title">{track.name}</span>
 
-        <button
-          className={`t-btn${recording ? ' rec' : ''}`}
-          onClick={() => {
-            if (recording) panic();
-            setRecording((v) => !v);
-          }}
-          title="Record from your MIDI controller"
-        >
-          {recording ? '■ Stop' : '● Record'}
-        </button>
+        <div className="bar-group">
+          <button
+            className="t-btn"
+            onClick={() => {
+              if (playing) return stop();
+              stopAll();
+              setPlaying(true);
+            }}
+            title="Play from the playhead (Space)"
+          >
+            {playing ? '❚❚' : '▶'}
+          </button>
+          <button
+            className={`t-btn${recording ? ' rec' : ''}`}
+            onClick={() => {
+              if (recording) return stop();
+              stopAll();
+              setRecording(true);
+            }}
+            title="Record from the playhead"
+          >
+            ●
+          </button>
+          <button className="t-btn" onClick={stop} title="Stop">
+            ■
+          </button>
+          <span className="midi-pos">{position}</span>
+        </div>
+
+        <span className="bar-sep" />
+
+        <label className="snap-ctl" title="Grid that notes snap to">
+          snap
+          <select value={snapId} onChange={(e) => setSnapId(e.target.value)}>
+            {SNAPS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="snap-ctl" title="Clip length in bars">
+          bars
+          <input
+            className="midi-bars"
+            type="number"
+            min="1"
+            max="64"
+            value={bars}
+            onChange={(e) => {
+              onBeginEdit?.();
+              onLengthChange?.(Math.max(1, Math.min(64, Number(e.target.value) || 1)) * beatsPerBar);
+            }}
+          />
+        </label>
+
+        <label className="midi-check" title="One bar of lead-in before recording starts">
+          <input type="checkbox" checked={countIn} onChange={(e) => setCountIn(e.target.checked)} />
+          count-in
+        </label>
+
+        <span className="bar-sep" />
 
         <InstrumentSlot
           instrument={track.instrument}
           instruments={instruments}
           loading={sampler?.loading}
-          ready={sampler?.isLoaded(track.instrument)}
+          ready={hasInstrument}
           onLoad={onLoadInstrument}
           onClear={() => onLoadInstrument(null)}
         />
 
         <button
           className="t-btn"
-          disabled={busy || !notes.length || !track.instrument}
-          onClick={onRender}
-          title={
-            !track.instrument
-              ? 'Load an instrument into this track first'
-              : !notes.length
-                ? 'Play or draw some notes first'
-                : ''
-          }
-        >
-          {busy ? '…' : 'Render'}
-        </button>
-
-        <button
-          className="t-btn"
           disabled={!notes.length}
           onClick={() => {
-            onBeginEdit();
+            onBeginEdit?.();
             onNotesChange([]);
           }}
         >
           Clear
         </button>
 
+        <button
+          className="t-btn"
+          disabled={busy || !notes.length || !track.instrument}
+          onClick={onRender}
+          title="Bake this part to audio — the sampler already plays it live"
+        >
+          {busy ? '…' : 'Bounce'}
+        </button>
+
         <span className="midi-devices">
           {error || (devices.length ? devices.map((d) => d.name).join(', ') : 'no controller')}
+          {' · '}
+          {notes.length} notes
         </span>
       </div>
 
@@ -191,8 +363,11 @@ export default function MidiEditor({
         onBeginEdit={onBeginEdit}
         bars={bars}
         beatsPerBar={beatsPerBar}
+        snap={snap}
         activePitches={active}
         playhead={playhead}
+        onScrub={scrub}
+        onPreview={preview}
       />
     </div>
   );

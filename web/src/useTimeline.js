@@ -235,6 +235,9 @@ export function useTimeline(sampler) {
         seed: meta.seed ?? null,
         backendUsed: meta.backendUsed ?? null,
         startBar: meta.startBar ?? 0,
+        // Remembered so the project can re-fetch this audio after a
+        // reload; AudioBuffers themselves cannot be persisted.
+        audioUrl: meta.audioUrl ?? null,
       };
       setTracks((prev) => [
         ...prev,

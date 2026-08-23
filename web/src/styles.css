@@ -728,3 +728,57 @@ input[type="range"] { accent-color: var(--ink); }
    so its rows sit tighter than an audio track's two. */
 .track-header .th-body { gap: 2px; }
 .track-header .slot.compact { margin: 1px 0; }
+
+/* ===== Piano roll ===================================================== */
+
+.roll { display: grid; background: var(--bg); border: 1px solid var(--line-strong); }
+.roll-gutter {
+  width: 42px; flex: none; border-right: 1px solid var(--line-strong);
+  background: var(--panel);
+  font-family: var(--mono); font-size: 0.55rem; color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+.roll-ruler-row { display: flex; border-bottom: 1px solid var(--line-strong); }
+.roll-ruler {
+  position: relative; flex: 1; background: var(--panel); cursor: ew-resize;
+}
+.roll-ruler span {
+  position: absolute; top: 3px; padding-left: 3px;
+  font-family: var(--mono); font-size: 0.58rem; color: var(--muted-ink);
+  border-left: 1px solid var(--line-strong); height: 14px;
+}
+.roll-ruler .roll-head {
+  border: none; padding: 0; top: 0; width: 1.5px; height: 100%;
+  background: var(--hot);
+}
+
+.roll-scroll { overflow-y: auto; overflow-x: hidden; }
+.roll-body { display: flex; }
+.roll-keys { position: relative; width: 42px; flex: none;
+  border-right: 1px solid var(--line-strong); background: var(--panel); }
+.roll-keys span {
+  position: absolute; right: 5px;
+  font-family: var(--mono); font-size: 0.55rem; color: var(--muted); line-height: 11px;
+}
+.roll-grid { flex: 1; min-width: 0; cursor: crosshair; }
+
+.roll-vel-row { display: flex; border-top: 1px solid var(--line-strong); }
+.roll-vel-row canvas { flex: 1; min-width: 0; cursor: ns-resize; }
+
+.midi-pos {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--muted-ink);
+  min-width: 2.4rem; text-align: center;
+}
+.midi-bars {
+  width: 3.2rem; font: inherit; font-size: 0.78rem;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.2rem 0.3rem;
+}
+.midi-check {
+  display: flex; align-items: center; gap: 0.3rem;
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted-ink);
+}
+.midi-editor { max-height: 52vh; }
