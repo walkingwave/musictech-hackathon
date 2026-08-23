@@ -102,5 +102,55 @@ export function useSampler() {
     [context],
   );
 
-  return { load, play, isLoaded, loading, context };
+  /**
+   * Sound a note now and hold it until released. Used for live playing,
+   * where the length is not known when the key goes down — `play` cannot
+   * serve that case because it needs a duration up front.
+   *
+   * Returns a handle whose `stop()` ramps the note out.
+   */
+  const noteOn = useCallback(
+    (instrument, pitch, { gain = 1, destination } = {}) => {
+      const entry = loadedRef.current.get(instrument?.id);
+      if (!entry?.samples.length) return null;
+
+      const ctx = context();
+      ctx.resume();
+      const sample = pick(entry.samples, pitch);
+      const source = ctx.createBufferSource();
+      source.buffer = sample.buffer;
+      source.playbackRate.value = 2 ** ((pitch - sample.actualPitch) / 12);
+      // Hold by looping: a three-second one-shot would otherwise stop
+      // dead under a longer press. Loop from past the attack so the
+      // transient is not retriggered, but clamp it — trimming can leave a
+      // sample short enough that a fixed loop start would sit beyond its
+      // end, which silently produces no sound at all.
+      const attack = Math.min(0.25, sample.buffer.duration * 0.25);
+      source.loop = true;
+      source.loopStart = attack;
+      source.loopEnd = sample.buffer.duration;
+
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, ctx.currentTime);
+      env.gain.linearRampToValueAtTime(gain, ctx.currentTime + 0.005);
+      source.connect(env).connect(destination || ctx.destination);
+      source.start();
+
+      return {
+        stop() {
+          const now = ctx.currentTime;
+          const release = 0.12;
+          env.gain.cancelScheduledValues(now);
+          env.gain.setValueAtTime(env.gain.value, now);
+          env.gain.linearRampToValueAtTime(0.0001, now + release);
+          // Stop after the ramp, not on it, or the release is cut off and
+          // clicks — the thing the ramp exists to prevent.
+          source.stop(now + release + 0.02);
+        },
+      };
+    },
+    [context],
+  );
+
+  return { load, play, noteOn, isLoaded, loading, context };
 }
