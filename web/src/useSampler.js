@@ -1,18 +1,25 @@
 import { useCallback, useRef, useState } from 'react';
 import * as apiClient from './api.js';
+import { matchPrompt, loadSoundfont } from './soundfonts.js';
 
-// A sampler: a handful of generated one-shots, pitch-shifted to play
-// whatever MIDI asks for.
+// The sampler behind every MIDI track. Two sources feed it:
 //
-// This is what keeps the notes exactly as played. Asking the model to
-// render a whole melody does not work — it rewrites the tune — so it only
-// makes one note at a time and the browser does the playing.
+//   soundfont  the prompt names a real instrument ("bowed cello, warm and
+//              woody" -> cello), so play real recordings of it — a General
+//              MIDI multisample, one recording per key across the whole
+//              keyboard. This is why a cello sounds like a cello.
+//   generated  the prompt names nothing any library holds ("glass bells
+//              underwater"), so ask the model for a few one-shots and
+//              pitch-shift them. Less faithful, but it can make anything.
 //
-// A nice side effect: editing needs no generation at all. Once an
-// instrument is sampled, moving notes around is instant.
+// Either way the MIDI itself is played back exactly as written by the
+// browser — the model never renders a melody, because asking it to
+// rewrites the tune. And once an instrument is loaded, editing notes needs
+// no generation at all.
 
 export function useSampler() {
-  // instrumentId -> { samples: [{pitch, actualPitch, buffer}] }
+  // instrumentId -> { type: 'soundfont', buffers: Map<pitch, AudioBuffer> }
+  //              | { type: 'generated', samples: [{actualPitch, buffer}] }
   const loadedRef = useRef(new Map());
   const ctxRef = useRef(null);
   const [loading, setLoading] = useState(null);
@@ -26,8 +33,31 @@ export function useSampler() {
     return instrument ? loadedRef.current.has(instrument.id) : false;
   }, []);
 
-  // Generate (or fetch from cache) the one-shots for an instrument and
-  // decode them ready to play.
+  const loadGenerated = useCallback(
+    async (instrument, backend) => {
+      const { samples } = await apiClient.instrumentSamples({
+        prompt: instrument.prompt,
+        backend,
+      });
+      const decoded = await Promise.all(
+        samples.map(async (s) => ({
+          // Takes are not generated at a requested pitch — each lands
+          // wherever it lands and reports it, and playback transposes
+          // from there.
+          actualPitch: s.actual_pitch,
+          buffer: await context().decodeAudioData(
+            await (await fetch(s.url)).arrayBuffer(),
+          ),
+        })),
+      );
+      return { type: 'generated', samples: decoded };
+    },
+    [context],
+  );
+
+  // Resolve the prompt to samples: a real soundfont when the prompt names
+  // an instrument, generated one-shots when it does not (or when the
+  // soundfont cannot be fetched — offline, say).
   const load = useCallback(
     async (instrument, { backend } = {}) => {
       if (!instrument?.prompt) throw new Error('this instrument has no description');
@@ -35,39 +65,45 @@ export function useSampler() {
 
       setLoading(instrument.id);
       try {
-        const { samples } = await apiClient.instrumentSamples({
-          prompt: instrument.prompt,
-          backend,
-        });
+        let entry = null;
+        const gm = matchPrompt(instrument.prompt);
+        if (gm) {
+          try {
+            entry = { type: 'soundfont', gm, buffers: await loadSoundfont(gm, context()) };
+          } catch (error) {
+            console.warn(`soundfont ${gm} unavailable, generating instead:`, error);
+          }
+        }
+        if (!entry) entry = await loadGenerated(instrument, backend);
 
-        const decoded = await Promise.all(
-          samples.map(async (s) => ({
-            // Takes are not generated at a requested pitch — each lands
-            // wherever it lands and reports it, and playback transposes
-            // from there.
-            actualPitch: s.actual_pitch,
-            buffer: await context().decodeAudioData(
-              await (await fetch(s.url)).arrayBuffer(),
-            ),
-          })),
-        );
-
-        const entry = { samples: decoded };
         loadedRef.current.set(instrument.id, entry);
         return entry;
       } finally {
         setLoading(null);
       }
     },
-    [context],
+    [context, loadGenerated],
   );
 
-  // The sample whose true pitch is nearest, so nothing is stretched
-  // further than it has to be.
-  const pick = (samples, pitch) =>
-    samples.reduce((best, s) =>
+  // The source nearest the requested pitch, so nothing is stretched
+  // further than it has to be. A soundfont usually holds the exact key.
+  const pick = (entry, pitch) => {
+    if (entry.type === 'soundfont') {
+      const exact = entry.buffers.get(pitch);
+      if (exact) return { buffer: exact, actualPitch: pitch };
+      let best = null;
+      for (const [p, buffer] of entry.buffers) {
+        if (!best || Math.abs(p - pitch) < Math.abs(best.actualPitch - pitch)) {
+          best = { buffer, actualPitch: p };
+        }
+      }
+      return best;
+    }
+    if (!entry.samples?.length) return null;
+    return entry.samples.reduce((best, s) =>
       Math.abs(s.actualPitch - pitch) < Math.abs(best.actualPitch - pitch) ? s : best,
     );
+  };
 
   /**
    * Schedule one note. `when` and `duration` are in AudioContext seconds.
@@ -76,26 +112,30 @@ export function useSampler() {
   const play = useCallback(
     (instrument, pitch, when, duration, { gain = 1, destination } = {}) => {
       const entry = loadedRef.current.get(instrument?.id);
-      if (!entry?.samples.length) return null;
+      if (!entry) return null;
 
       const ctx = context();
-      const sample = pick(entry.samples, pitch);
+      const sample = pick(entry, pitch);
+      if (!sample) return null;
       const source = ctx.createBufferSource();
       source.buffer = sample.buffer;
       source.playbackRate.value = 2 ** ((pitch - sample.actualPitch) / 12);
 
       // Short attack and release. Without the release a note cut shorter
-      // than its sample ends on a click.
+      // than its sample ends on a click. Soundfont recordings carry their
+      // own natural release tail, so give them a longer ramp to let it
+      // breathe instead of chopping it at the note boundary.
       const env = ctx.createGain();
-      const release = Math.min(0.06, duration / 2);
+      const tail = entry.type === 'soundfont' ? 0.25 : 0.02;
+      const release = Math.min(entry.type === 'soundfont' ? 0.2 : 0.06, duration / 2);
       env.gain.setValueAtTime(0, when);
       env.gain.linearRampToValueAtTime(gain, when + 0.005);
       env.gain.setValueAtTime(gain, when + duration - release);
-      env.gain.linearRampToValueAtTime(0.0001, when + duration);
+      env.gain.linearRampToValueAtTime(0.0001, when + duration + tail);
 
       source.connect(env).connect(destination || ctx.destination);
       source.start(when);
-      source.stop(when + duration + 0.02);
+      source.stop(when + duration + tail + 0.02);
       return source;
     },
     [context],
@@ -111,23 +151,31 @@ export function useSampler() {
   const noteOn = useCallback(
     (instrument, pitch, { gain = 1, destination } = {}) => {
       const entry = loadedRef.current.get(instrument?.id);
-      if (!entry?.samples.length) return null;
+      if (!entry) return null;
 
       const ctx = context();
       ctx.resume();
-      const sample = pick(entry.samples, pitch);
+      const sample = pick(entry, pitch);
+      if (!sample) return null;
       const source = ctx.createBufferSource();
       source.buffer = sample.buffer;
       source.playbackRate.value = 2 ** ((pitch - sample.actualPitch) / 12);
-      // Hold by looping: a three-second one-shot would otherwise stop
-      // dead under a longer press. Loop from past the attack so the
-      // transient is not retriggered, but clamp it — trimming can leave a
-      // sample short enough that a fixed loop start would sit beyond its
-      // end, which silently produces no sound at all.
-      const attack = Math.min(0.25, sample.buffer.duration * 0.25);
-      source.loop = true;
-      source.loopStart = attack;
-      source.loopEnd = sample.buffer.duration;
+
+      if (entry.type === 'generated') {
+        // Hold by looping: a three-second one-shot would otherwise stop
+        // dead under a longer press. Loop from past the attack so the
+        // transient is not retriggered, but clamp it — trimming can leave a
+        // sample short enough that a fixed loop start would sit beyond its
+        // end, which silently produces no sound at all.
+        const attack = Math.min(0.25, sample.buffer.duration * 0.25);
+        source.loop = true;
+        source.loopStart = attack;
+        source.loopEnd = sample.buffer.duration;
+      }
+      // Soundfont recordings are left unlooped: they carry a natural decay
+      // and release, and looping compressed audio mid-note clicks. A very
+      // long press simply lets the note ring out, like a real sampler
+      // without loop points.
 
       const env = ctx.createGain();
       env.gain.setValueAtTime(0, ctx.currentTime);
