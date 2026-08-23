@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ClipView from './ClipView.jsx';
 import MidiEditor from './MidiEditor.jsx';
+import InstrumentSlot from './InstrumentSlot.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
 import { parseRequest, describePlan } from '../parseRequest.js';
 import * as apiClient from '../api.js';
@@ -42,6 +43,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 export default function Studio({
   engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
   onGenerateStem, onGenerateFromReference, onRenderMidi, sessionId,
+  instruments = [], onCreateInstrument,
 }) {
   const {
     tracks,
@@ -376,8 +378,13 @@ export default function Studio({
   // Render a MIDI clip: its notes become the guide, the track's instrument
   // prompt becomes the sound. The notes stay on the clip afterwards, so it
   // can be edited and re-rendered.
-  const renderMidiClip = async (instrument) => {
+  const renderMidiClip = async () => {
     if (!selClip || !selTrack) return;
+    const instrument = selTrack.instrument;
+    if (!instrument) {
+      setStatus('Load an instrument into this track first.');
+      return;
+    }
     setBusy(true);
     setStatus(`Rendering ${selTrack.name}…`);
     try {
@@ -385,7 +392,7 @@ export default function Studio({
         notes: (selClip.notes || []).map(({ pitch, start, length, velocity }) => ({
           pitch, start, length, velocity,
         })),
-        prompt: instrument,
+        prompt: instrument.prompt,
         name: selTrack.name,
         bars: Math.max(1, Math.round((selClip.durationBeats || 8) / 4)),
       });
@@ -395,7 +402,7 @@ export default function Studio({
         duration: result.duration || buffer.duration,
         seed: result.seed,
         backendUsed: result.backend_used,
-        prompt: instrument,
+        prompt: instrument.prompt,
       });
       setStatus('');
     } catch (e) {
@@ -529,7 +536,7 @@ export default function Studio({
             onAiTrack={generateReferenceTrack}
             onMidi={() => {
               const n = tracks.filter((t) => t.kind === 'midi').length + 1;
-              const { trackId, clipId } = addMidiTrack(`MIDI ${n}`, '', {
+              const { trackId, clipId } = addMidiTrack(`MIDI ${n}`, null, {
                 start: 0,
                 duration: secondsPerBar * 4,
                 notes: [],
@@ -549,6 +556,7 @@ export default function Studio({
               key={t.id}
               track={t}
               height={LANE_H}
+              instruments={instruments}
               onProp={(p, v) => setTrackProp(t.id, p, v)}
               onRemove={() => removeTrack(t.id)}
             />
@@ -622,7 +630,9 @@ export default function Studio({
           busy={busy}
           onBeginEdit={beginGesture}
           onNotesChange={(notes) => setClipNotes(selTrack.id, selClip.id, notes)}
-          onInstrument={(value) => setTrackProp(selTrack.id, 'instrument', value)}
+          instruments={instruments}
+          onLoadInstrument={(i) => setTrackProp(selTrack.id, 'instrument', i)}
+          onCreateInstrument={onCreateInstrument}
           onRender={renderMidiClip}
         />
       )}
@@ -900,7 +910,7 @@ function Ruler({ width, height, secondsPerBar, pps, loop, onDown }) {
   );
 }
 
-function TrackHeader({ track, height, onProp, onRemove }) {
+function TrackHeader({ track, height, instruments, onProp, onRemove }) {
   return (
     <div className="track-header" style={{ height }}>
       <span className="th-color" style={{ background: KIND_COLOR[track.kind] || '#c4d4d6' }} />
@@ -911,6 +921,15 @@ function TrackHeader({ track, height, onProp, onRemove }) {
             ×
           </button>
         </div>
+        {track.kind === 'midi' && (
+          <InstrumentSlot
+            compact
+            instrument={track.instrument}
+            instruments={instruments}
+            onLoad={(i) => onProp('instrument', i)}
+            onClear={() => onProp('instrument', null)}
+          />
+        )}
         <div className="th-controls">
           <button className={`th-btn${track.muted ? ' on' : ''}`} onClick={() => onProp('muted', !track.muted)}>
             M

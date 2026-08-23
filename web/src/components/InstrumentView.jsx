@@ -19,23 +19,26 @@ const PRESETS = [
   { name: 'Choir', prompt: 'warm choir pad, sustained aahs, cathedral space' },
 ];
 
-export default function InstrumentView({ onCreate, existing = [] }) {
+export default function InstrumentView({ onCreate, onRemove, instruments = [] }) {
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
 
   const create = (e) => {
     e.preventDefault();
     if (!prompt.trim()) return;
-    onCreate({ name: name.trim() || prompt.trim().split(/[ ,]/)[0], prompt: prompt.trim() });
+    onCreate({ name, prompt });
+    setName('');
+    setPrompt('');
   };
 
   return (
     <main className="instrument">
       <Section num="01" title="DESCRIBE THE INSTRUMENT">
         <p className="hint">
-          Describe a sound and it becomes a MIDI track in the studio. Play it
-          from your controller or draw it in the piano roll there, then render
-          it — Stable Audio 3 keeps your performance and supplies the timbre.
+          Instruments are sounds you can load into any MIDI track, and swap
+          without touching the notes. Describe one here, then load it into a
+          track's slot in the studio — play or draw the part, hit Render, and
+          Stable Audio 3 keeps your performance and supplies the timbre.
         </p>
 
         <form className="row" onSubmit={create}>
@@ -55,7 +58,7 @@ export default function InstrumentView({ onCreate, existing = [] }) {
             />
           </label>
           <button className="primary" disabled={!prompt.trim()}>
-            Create instrument
+            Add to library
           </button>
         </form>
 
@@ -76,23 +79,23 @@ export default function InstrumentView({ onCreate, existing = [] }) {
         </div>
       </Section>
 
-      {existing.length > 0 && (
-        <Section num="02" title="IN THIS PROJECT">
-          <div className="instrument-list">
-            {existing.map((t) => (
-              <div key={t.id} className="instrument-row">
-                <span className="instrument-name">{t.name}</span>
-                <span className="instrument-prompt">
-                  {t.instrument || <em>no sound described yet</em>}
-                </span>
-                <span className="instrument-notes">
-                  {(t.clips?.[0]?.notes?.length ?? 0)} notes
-                </span>
-              </div>
-            ))}
-          </div>
-        </Section>
-      )}
+      <Section num="02" title="LIBRARY">
+        <div className="instrument-list">
+          {instruments.map((i) => (
+            <div key={i.id} className="instrument-row">
+              <span className="instrument-name">{i.name}</span>
+              <span className="instrument-prompt">{i.prompt}</span>
+              {i.id.startsWith('f-') ? (
+                <span className="instrument-notes">factory</span>
+              ) : (
+                <button className="instrument-x" onClick={() => onRemove(i.id)} title="remove">
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </Section>
     </main>
   );
 }

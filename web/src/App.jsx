@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as apiClient from './api.js';
 import { blobToWav } from './wav.js';
 import { useTimeline } from './useTimeline.js';
+import { useInstruments } from './useInstruments.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
 import Studio from './components/Studio.jsx';
@@ -31,6 +32,7 @@ export default function App() {
   const [studioMode, setStudioMode] = useState('major');
 
   const engine = useTimeline();
+  const library = useInstruments();
   const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
   const vocalAddedRef = useRef(false);
 
@@ -216,12 +218,14 @@ export default function App() {
     [sessionId, backend, studioBpm, studioKey, studioMode],
   );
 
-  // Describing an instrument creates an empty MIDI track for it; the notes
-  // get written in the studio, against the rest of the arrangement.
+  // Adding an instrument to the library also gives you somewhere to play
+  // it: a MIDI track with that instrument already in its slot. The slot is
+  // swappable afterwards, so this is a shortcut, not a binding.
   const createInstrument = useCallback(
     ({ name, prompt }) => {
+      const instrument = library.create({ name, prompt });
       const secondsPerBar = (60 / (studioBpm || 100)) * 4;
-      engine.addMidiTrack(name, prompt, {
+      engine.addMidiTrack(instrument.name, instrument, {
         start: 0,
         duration: secondsPerBar * 4,
         durationBeats: 16,
@@ -229,7 +233,7 @@ export default function App() {
       });
       setView('studio');
     },
-    [engine, studioBpm],
+    [engine, library, studioBpm],
   );
 
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
@@ -257,7 +261,8 @@ export default function App() {
       {view === 'instrument' ? (
         <InstrumentView
           onCreate={createInstrument}
-          existing={engine.tracks.filter((t) => t.kind === 'midi')}
+          onRemove={library.remove}
+          instruments={library.instruments}
         />
       ) : view === 'input' ? (
         <InputView
@@ -290,6 +295,7 @@ export default function App() {
           onGenerateFromReference={studioGenerateFromReference}
           onRenderMidi={renderMidi}
           sessionId={sessionId}
+          instruments={library.instruments}
         />
       )}
 

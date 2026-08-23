@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import PianoRoll from './PianoRoll.jsx';
 import { useMidiInput } from '../useMidiInput.js';
+import InstrumentSlot from './InstrumentSlot.jsx';
 
 // The piano roll, docked at the bottom of the studio for whichever MIDI
 // clip is selected. Notes here are the guide track: Stable Audio 3 keeps
@@ -18,19 +19,17 @@ export default function MidiEditor({
   onNotesChange,
   onBeginEdit,
   onRender,
-  onInstrument,
+  instruments,
+  onLoadInstrument,
 }) {
   const [recording, setRecording] = useState(false);
   const [playhead, setPlayhead] = useState(null);
-  const [instrument, setInstrument] = useState(track.instrument || '');
 
   const beatsPerBar = 4;
   const secondsPerBeat = 60 / (bpm || 100);
   const bars = Math.max(1, Math.round(clip.durationBeats || 8) / beatsPerBar);
   const startedAtRef = useRef(0);
   const ctxRef = useRef(null);
-
-  useEffect(() => setInstrument(track.instrument || ''), [track.id, track.instrument]);
 
   // Monitoring only — a blip so the controller responds immediately. The
   // real sound arrives when the clip is rendered.
@@ -104,21 +103,26 @@ export default function MidiEditor({
           {recording ? '■ Stop' : '● Record'}
         </button>
 
-        <input
-          className="midi-prompt"
-          value={instrument}
-          placeholder="what should these notes sound like?"
-          onChange={(e) => setInstrument(e.target.value)}
-          onBlur={() => onInstrument(instrument)}
+        <InstrumentSlot
+          instrument={track.instrument}
+          instruments={instruments}
+          onLoad={onLoadInstrument}
+          onClear={() => onLoadInstrument(null)}
         />
 
         <button
           className="t-btn"
-          disabled={busy || !notes.length || !instrument.trim()}
-          onClick={() => onInstrument(instrument) || onRender(instrument)}
-          title={notes.length ? '' : 'Play or draw some notes first'}
+          disabled={busy || !notes.length || !track.instrument}
+          onClick={onRender}
+          title={
+            !track.instrument
+              ? 'Load an instrument into this track first'
+              : !notes.length
+                ? 'Play or draw some notes first'
+                : ''
+          }
         >
-          {busy ? '…' : 'Render instrument'}
+          {busy ? '…' : 'Render'}
         </button>
 
         <button
