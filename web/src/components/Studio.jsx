@@ -385,12 +385,12 @@ export default function Studio({
     if (!instrument) return;
     if (sampler.isLoaded(instrument)) return;
     setBusy(true);
-    setStatus(`Sampling ${instrument.name}…`);
+    setStatus(`Loading ${instrument.name}…`);
     try {
       await sampler.load(instrument, { backend });
       setStatus('');
     } catch (e) {
-      setStatus(`Could not sample ${instrument.name} — ${e.message}`);
+      setStatus(`Could not load ${instrument.name} — ${e.message}`);
     }
     setBusy(false);
   };

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { matchPrompt } from './soundfonts.js';
 
 // The instrument library — the equivalent of Ableton's device browser.
 //
@@ -52,9 +53,16 @@ export function useInstruments() {
   }, [instruments]);
 
   const create = useCallback(({ name, prompt }) => {
+    // Unnamed instruments take the name of the instrument the prompt maps
+    // to ("bowed cello, warm" -> "Cello") rather than its first word, which
+    // produced tracks called "Bowed".
+    const gm = matchPrompt(prompt);
+    const fallback = gm
+      ? gm.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      : prompt.trim().split(/[ ,]/)[0];
     const instrument = {
       id: uid(),
-      name: name?.trim() || prompt.trim().split(/[ ,]/)[0],
+      name: name?.trim() || fallback,
       prompt: prompt.trim(),
     };
     setInstruments((prev) => [...prev, instrument]);

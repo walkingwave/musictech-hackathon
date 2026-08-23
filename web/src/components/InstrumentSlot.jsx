@@ -93,7 +93,7 @@ export default function InstrumentSlot({
   const label = !instrument
     ? 'empty slot'
     : loading === instrument.id
-      ? 'sampling…'
+      ? 'loading…'
       : ready
         ? instrument.name
         : `${instrument.name} ·`;

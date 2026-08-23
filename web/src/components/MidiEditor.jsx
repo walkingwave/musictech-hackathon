@@ -357,7 +357,7 @@ export default function MidiEditor({
             <b className="midi-warn">load an instrument to hear this</b>
           ) : !hasInstrument ? (
             <b className="midi-warn">
-              {sampler?.loading === track.instrument.id ? 'sampling…' : 'instrument not sampled'}
+              {sampler?.loading === track.instrument.id ? 'loading…' : 'instrument not loaded'}
             </b>
           ) : (
             error || (devices.length ? devices.map((d) => d.name).join(', ') : 'no controller')

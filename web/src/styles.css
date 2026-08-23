@@ -526,6 +526,9 @@ input[type="range"] { accent-color: var(--ink); }
 .menu-pop > button, .menu-file {
   text-align: left; font-size: 0.78rem; padding: 0.5rem 0.6rem;
   background: transparent; color: var(--ink); border: none; cursor: pointer;
+  /* The file item is a <label>, not a <button>, so it does not inherit the
+     global button typography — match it by hand or it reads out of place. */
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
 }
 .menu-pop > button:hover:not(:disabled), .menu-file:hover { background: var(--badge); }
 .menu-pop > button:disabled { color: var(--muted); cursor: not-allowed; }
@@ -627,6 +630,9 @@ input[type="range"] { accent-color: var(--ink); }
 }
 .preset:hover { border-color: var(--ink); color: var(--ink); }
 
+/* The flex .row rule is scoped to .field, so the instrument form needs its
+   own — without it the prompt, name and button stack in a column. */
+.instrument form.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .instrument .insp-prompt { flex: 1; min-width: 16rem; }
 .instrument .studio-field input { width: 9rem; font-size: 0.85rem; font-weight: 400; }
 

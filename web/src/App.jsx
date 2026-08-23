@@ -54,6 +54,18 @@ export default function App() {
     onRestored: (saved) => {
       if (saved.tracks?.length) setView('studio');
       flash('Project restored');
+      // Re-load every restored track's instrument, or the MIDI parts come
+      // back visible but silent until each slot is manually reloaded.
+      // Sequential: generated instruments contend for the local model.
+      (async () => {
+        const seen = new Set();
+        for (const t of saved.tracks || []) {
+          const inst = t.kind === 'midi' && t.instrument;
+          if (!inst || seen.has(inst.id)) continue;
+          seen.add(inst.id);
+          await sampler.load(inst, { backend }).catch(() => {});
+        }
+      })();
     },
   });
   const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
@@ -256,8 +268,13 @@ export default function App() {
         notes: [],
       });
       setView('studio');
+      // Start fetching the sound immediately — the track arrives playable
+      // instead of waiting for the slot to be reopened and reloaded.
+      sampler
+        .load(instrument, { backend })
+        .catch((error) => flash(`Could not load ${instrument.name} — ${error.message}`));
     },
-    [engine, library, studioBpm],
+    [engine, library, studioBpm, sampler, backend, flash],
   );
 
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.

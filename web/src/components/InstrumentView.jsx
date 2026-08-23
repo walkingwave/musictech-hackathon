@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Section from './Section.jsx';
+import { matchPrompt } from '../soundfonts.js';
 
 // Define an instrument by describing it, then go and play it.
 //
@@ -22,6 +23,9 @@ const PRESETS = [
 export default function InstrumentView({ onCreate, onRemove, instruments = [] }) {
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  // Live feedback on where the sound will come from: a named instrument
+  // maps to a real multisampled library; anything else is generated.
+  const matched = matchPrompt(prompt);
 
   const create = (e) => {
     e.preventDefault();
@@ -36,9 +40,10 @@ export default function InstrumentView({ onCreate, onRemove, instruments = [] })
       <Section num="01" title="DESCRIBE THE INSTRUMENT">
         <p className="hint">
           Instruments are sounds you can load into any MIDI track, and swap
-          without touching the notes. Describe one here, then load it into a
-          track's slot in the studio — play or draw the part, hit Render, and
-          Stable Audio 3 keeps your performance and supplies the timbre.
+          without touching the notes. Name a real instrument and it plays
+          through a real sample library; describe something stranger and
+          Stable Audio 3 invents it. Either way your notes play back exactly
+          as written.
         </p>
 
         <form className="row" onSubmit={create}>
@@ -61,6 +66,14 @@ export default function InstrumentView({ onCreate, onRemove, instruments = [] })
             Add to library
           </button>
         </form>
+
+        {prompt.trim() && (
+          <p className="hint">
+            {matched
+              ? `“${prompt.trim()}” plays through the real ${matched.replace(/_/g, ' ')} sample library.`
+              : 'No known instrument in that description — the sound will be AI-generated. Name an instrument (cello, flute, rhodes…) to use real samples.'}
+          </p>
+        )}
 
         <div className="preset-row">
           {PRESETS.map((p) => (

@@ -14,6 +14,11 @@ import { useCallback, useEffect, useRef } from 'react';
 const KEY = 'btg.project';
 const SAVE_DEBOUNCE = 600;
 
+// Module-level, not a ref: StrictMode mounts the app twice in development,
+// and a per-instance ref is fresh on the second mount — so the restore ran
+// twice and every track in the project was duplicated on each reload.
+let restoreStarted = false;
+
 export function useProject({ engine, sessionId, setSessionId, studio, onRestored }) {
   const restoredRef = useRef(false);
   const timerRef = useRef(null);
@@ -67,7 +72,10 @@ export function useProject({ engine, sessionId, setSessionId, studio, onRestored
   // --- restore -----------------------------------------------------------
 
   useEffect(() => {
-    let cancelled = false;
+    // StrictMode re-runs this effect on the same instance; restoredRef is
+    // shared, and the first run's completion will set it.
+    if (restoreStarted) return undefined;
+    restoreStarted = true;
 
     (async () => {
       let saved = null;
@@ -88,7 +96,6 @@ export function useProject({ engine, sessionId, setSessionId, studio, onRestored
       if (saved.mode) studio.setMode(saved.mode);
 
       for (const track of saved.tracks) {
-        if (cancelled) return;
         const clip = track.clips?.[0];
         if (!clip) continue;
 
@@ -125,9 +132,10 @@ export function useProject({ engine, sessionId, setSessionId, studio, onRestored
       onRestored?.(saved);
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    // No cleanup: StrictMode's dev-only unmount/remount would cancel the
+    // in-flight restore on the mount that survives. The module guard above
+    // already makes this a single run.
+    return undefined;
     // Runs once on mount by design.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
