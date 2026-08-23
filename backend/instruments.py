@@ -28,11 +28,14 @@ from . import config, render_guide, sa3_backend
 
 log = logging.getLogger(__name__)
 
-# Every third octave. Wide enough that no note is stretched more than a
-# minor third from its source, which is where pitch-shifting starts to
-# sound obviously wrong, and few enough that a full instrument is four
-# generations rather than dozens.
-DEFAULT_PITCHES = (36, 48, 60, 72, 84)  # C2 C3 C4 C5 C6
+# Three samples covering C3-C5, the range most parts are played in.
+#
+# Deliberately few. Every pitch is a generation, and with retries five
+# pitches took the better part of a minute per instrument — long enough
+# that loading one reads as nothing happening at all. Three keeps it to
+# roughly fifteen seconds while still putting a source within about an
+# octave of any note that gets played.
+DEFAULT_PITCHES = (48, 60, 72)  # C3 C4 C5
 
 # Long enough to hold a sustained note plus release. Sampler playback
 # truncates to the MIDI note's length anyway.
@@ -50,10 +53,15 @@ SAMPLE_SECONDS = 3.0
 # this to fix a tuning problem — it trades the instrument away for it.
 SAMPLE_NOISE = 0.85
 
-# Past this much drift, transposing back is a big enough stretch to sound
-# obviously slowed or sped up, so the sample is regenerated instead.
-MAX_DRIFT = 6
-RETRIES = 2
+# The sampler transposes from whatever pitch a sample actually landed on,
+# so drift is survivable — but a large stretch at playback audibly slows or
+# speeds the tone. Retry to land close, and keep the closest attempt.
+# A fifth. The sampler transposes from wherever a sample landed, so drift
+# is not fatal — only a large stretch at playback is. Tightening this to a
+# major third tripled generation time to 38s an instrument, because nearly
+# every pitch retried; the tolerance costs far less than the wait.
+MAX_DRIFT = 7
+RETRIES = 1
 
 
 def instrument_id(prompt: str) -> str:
@@ -135,8 +143,13 @@ def generate_samples(
                 log.info("pitch %d drifted %+d, retrying", pitch, actual - pitch)
 
             audio, actual, drift = best
-            if drift:
-                audio = _trim_and_fade(_retune(audio, pitch - actual, seconds))
+            # Deliberately NOT retuned. Resampling a sample onto its
+            # intended pitch drags its whole spectrum with it: measured
+            # across four instruments it collapsed three of four centroids
+            # to under 600Hz and cut distinctness from 0.76 to 0.27 — it
+            # gives back exactly the timbre that high divergence bought.
+            # The sampler transposes from the detected pitch instead,
+            # which is what a sampler does anyway.
             sf.write(path, audio, config.SAMPLE_RATE)
             log.info(
                 "sampled %s at %d (sounds %d) via %s",
@@ -180,17 +193,12 @@ def detect_pitch(audio: np.ndarray) -> int | None:
 
 
 def _retune(audio: np.ndarray, semitones: float, seconds: float) -> np.ndarray:
-    """Resample so the note actually sounds the pitch it was asked for.
+    """Resample a note onto a different pitch.
 
-    The model drifts under the divergence needed to get a real timbre, and
-    correcting it here is better than leaving it to the sampler: a sample
-    that sounds a major sixth away from its slot forces every note played
-    from it through the same large stretch, whereas correcting once at
-    generation leaves the set evenly spaced and the stretches small.
-
-    Plain resampling rather than a phase-vocoder shift. These are sustained
-    single notes that get looped anyway, so the length change does not
-    matter, and resampling keeps the timbre clean where a vocoder smears it.
+    Kept for callers that genuinely want a fixed pitch, but NOT used when
+    generating instrument samples: shifting a sample onto its intended
+    pitch moves its whole spectrum, which undoes the timbre that the high
+    divergence was there to produce. See generate_samples.
     """
     if abs(semitones) < 0.5:
         return audio

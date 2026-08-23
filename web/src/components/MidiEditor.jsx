@@ -351,7 +351,17 @@ export default function MidiEditor({
         </button>
 
         <span className="midi-devices">
-          {error || (devices.length ? devices.map((d) => d.name).join(', ') : 'no controller')}
+          {/* Silence here is nearly always an empty slot, so say so rather
+              than leaving the user wondering whether anything generated. */}
+          {!track.instrument ? (
+            <b className="midi-warn">load an instrument to hear this</b>
+          ) : !hasInstrument ? (
+            <b className="midi-warn">
+              {sampler?.loading === track.instrument.id ? 'sampling…' : 'instrument not sampled'}
+            </b>
+          ) : (
+            error || (devices.length ? devices.map((d) => d.name).join(', ') : 'no controller')
+          )}
           {' · '}
           {notes.length} notes
         </span>

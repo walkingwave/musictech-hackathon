@@ -782,3 +782,4 @@ input[type="range"] { accent-color: var(--ink); }
   letter-spacing: 0.08em; color: var(--muted-ink);
 }
 .midi-editor { max-height: 52vh; }
+.midi-warn { color: var(--hot); font-weight: 400; }

@@ -417,10 +417,11 @@ export default function PianoRoll({
     return out;
   }, []);
 
-  const scrubTo = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+  // The rect is captured once, on pointer-down. Reading currentTarget
+  // during the drag would resolve to `window`, which has no
+  // getBoundingClientRect — the drag threw on its first move.
+  const scrubFrom = (rect) => (e) =>
     onScrub?.(Math.max(0, xToBeat(e.clientX - rect.left)));
-  };
 
   return (
     <div className="roll">
@@ -430,8 +431,10 @@ export default function PianoRoll({
           className="roll-ruler"
           style={{ height: RULER_H }}
           onPointerDown={(e) => {
-            scrubTo(e);
-            dragLoop(scrubTo);
+            const rect = e.currentTarget.getBoundingClientRect();
+            const scrub = scrubFrom(rect);
+            scrub(e);
+            dragLoop(scrub);
           }}
         >
           {Array.from({ length: bars + 1 }, (_, i) => (
