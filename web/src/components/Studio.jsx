@@ -20,6 +20,11 @@ const KIND_COLOR = {
   drums: '#e8dcb4',
   piano: '#c4dcc0',
   harmony: '#d7c6df',
+  melody: '#e3c9a8',
+  guitar: '#bfd9d2',
+  // A mix is the whole band, so it gets its own colour rather than the
+  // generic audio grey — it is the one track that is the song.
+  mix: '#d9c2c2',
   audio: '#c4d4d6',
 };
 const colorFor = (kind) => KIND_COLOR[kind] || KIND_COLOR.audio;
@@ -99,6 +104,10 @@ export default function Studio({
 
   const selTrack = selected ? tracks.find((t) => t.id === selected.trackId) : null;
   const selClip = selTrack?.clips.find((c) => c.id === selected.clipId) || null;
+  // The piano roll owns the keyboard while it is open. Both it and the
+  // timeline listen for Space on the window, so without this a single press
+  // started the transport and the roll at once and everything played twice.
+  const midiEditorOpen = !!(selClip && selTrack && selTrack.kind === 'midi');
 
   // --- keyboard shortcuts ------------------------------------------------
   useEffect(() => {
@@ -121,6 +130,9 @@ export default function Studio({
       if (e.metaKey || e.ctrlKey) return;
 
       if (e.code === 'Space') {
+        // The piano roll handles its own Space; letting this one through too
+        // played the clip and the whole timeline at the same time.
+        if (midiEditorOpen) return;
         e.preventDefault();
         playing ? pause() : play();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -144,7 +156,7 @@ export default function Studio({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [
-    playing, pause, play, selClip, selTrack,
+    playing, pause, play, selClip, selTrack, midiEditorOpen,
     removeClip, splitClip, duplicateClip, position, undo, redo,
   ]);
 
@@ -339,6 +351,24 @@ export default function Studio({
       await onApplySettings({ bpm: plan.bpm, key: plan.key, mode: plan.mode });
     }
 
+    // Who trades with whom. The backend arranges each part around the others
+    // — leads take turns, comping parts lay out — but only if it knows which
+    // of several same-role tracks this one is. Roles have to match the
+    // backend's ROLES table.
+    const ROLE = {
+      drums: 'rhythm', bass: 'rhythm', mix: 'rhythm',
+      piano: 'comp', guitar: 'comp', harmony: 'comp',
+      melody: 'lead', free: 'lead',
+    };
+    const roleCounts = {};
+    const voices = plan.tracks.map((spec) => {
+      const role = ROLE[spec.part] || 'lead';
+      const index = roleCounts[role] || 0;
+      roleCounts[role] = index + 1;
+      return { role, index };
+    });
+    const roleTotals = roleCounts;
+
     try {
       for (const [i, spec] of plan.tracks.entries()) {
         const part = spec.part;
@@ -374,6 +404,10 @@ export default function Studio({
           // The recording description is shared by every part of the plan —
           // it is what makes four separate model calls sound like one band.
           production: plan.production || undefined,
+          // Position among the same-role tracks, so the backend can have the
+          // leads trade phrases and the comping parts lay out for each other.
+          voice_index: voices[i].index,
+          voice_count: roleTotals[voices[i].role] || 1,
           // No seed on purpose: the backend reuses the arrangement's seed for
           // every part, which keeps their timbre and room in the same place.
           // The per-clip regenerate buttons still pass their own.

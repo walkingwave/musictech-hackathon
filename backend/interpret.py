@@ -103,7 +103,21 @@ Rules:
     guitar  chords in a mid register, plucked or strummed
     drums   unpitched percussion of any kind (kit, cymbals, timpani,
             congas, tambourine, shaker)
-    harmony sustained pads, strings, choir, brass swells
+    harmony sustained pads, a string or brass SECTION, choir — held chords
+            behind everything else, never the tune
+    melody  the tune itself: a single lead line. A solo violin, flute, sax,
+            trumpet, cello or lead synth playing a melody is `melody`, not
+            `harmony`. If the user names one instrument and expects to hear
+            it out front, it is `melody`.
+    mix     the WHOLE band rendered as ONE track instead of separate parts.
+            This is opt-in, never the default: use it only when the user
+            explicitly asks for a single track — "as one track", "one file",
+            "don't split it", "a full mix", "one whole song in one go". A
+            plain "make me an EDM track" is NOT that; it wants a playable
+            arrangement, which means separate parts they can mix and edit.
+            When you do use it, return it as the ONLY track and describe the
+            whole band in its `instrument`.
+    free    an instrument with no clear rhythmic role
 - NEVER substitute one named instrument for another. If the user says
   "piano chords", the part is `piano` and the instrument says piano — not
   guitar, not Rhodes, not "keys". A named instrument is the one thing in the
@@ -261,7 +275,7 @@ The json object must match this exact shape:
 {{
   "tracks": [
     {{
-      "part": "bass | piano | guitar | drums | harmony | free",
+      "part": "bass | piano | guitar | drums | harmony | melody | mix | free",
       "name": "short track name",
       "instrument": "complete sound description, or empty string for the default",
       "style": "track-specific style, usually empty",
@@ -286,7 +300,11 @@ Important:
   about adding or changing a sound. Change them when the request carries a
   mood or genre of its own — a sad ballad in a session set to 120 BPM C
   major should come back slow and minor.
-- If the user asks for a full arrangement, return bass, drums, piano, and harmony.
+- A request for a song, track, beat or instrumental means a full ARRANGEMENT:
+  return the separate parts that make it up — typically drums, bass, a
+  chordal part and a melody — so the user can mix, mute and edit them. Four
+  tracks, not one. Only collapse it into a single `mix` track when the user
+  explicitly asks for one track.
 """
 
 
@@ -297,9 +315,17 @@ Important:
 PART_BY_INSTRUMENT: list[tuple[str, str]] = [
     (r"\bdrum|\bkit\b|percussion|conga|bongo|tabla|timpani|tambourine|shaker|cymbal|hi-?hat|snare", "drums"),
     (r"\bbass\b|\b808\b|contrabass|upright bass|sub ?bass|tuba", "bass"),
+    # Role words beat instrument family: a "lead guitar" is a lead that
+    # happens to be a guitar, and arranging it as comping is why a bebop
+    # request came back with two chordal parts and one horn instead of two
+    # soloists trading. "solo" is deliberately absent — "solo piano" means a
+    # piano, not a lead line.
+    (r"\blead\b|\bmelody\b|\btopline\b|\btheme\b|\bsoloist\b", "melody"),
+    # Instruments that only ever play a single line.
+    (r"\bviolin|\bfiddle\b|\bcello\b|\bviola\b|\bflute\b|\bsax|\btrumpet\b|\bclarinet\b|\boboe\b|\bwhistle\b", "melody"),
     (r"\bpiano\b|rhodes|wurlitzer|clavinet|harpsichord|celesta|organ|keys\b|xylophone|marimba|vibraphone|glockenspiel|kalimba|mallet", "piano"),
-    (r"\bguitar\b|\bukulele\b|banjo|mandolin|sitar|\bharp\b|lute", "guitar"),
-    (r"\bpad\b|\bstrings?\b|\bchoir\b|\bviolin|\bcello\b|\bviola\b|brass|\bhorns?\b|\bsynth pad\b|ensemble", "harmony"),
+    (r"\bguitar\b|\bukulele\b|banjo|mandolin|sitar|\bharp\b|\blute\b", "guitar"),
+    (r"\bpad\b|\bstrings?\b|\bchoir\b|\bensemble\b|\bsection\b|brass|\bhorns?\b|\bswells?\b", "harmony"),
 ]
 
 
@@ -325,6 +351,11 @@ def _sanitize(plan: Plan) -> Plan:
     # for piano chords and being handed a guitar is the single most visible
     # way this feature fails, and it is entirely fixable here.
     for track in plan.tracks:
+        # A mix describes the whole band, so of course it names instruments.
+        # Correcting it would turn "make me an EDM track" into a drum stem,
+        # which is exactly what happened before this check.
+        if track.part == "mix":
+            continue
         named = _part_for_instrument(f"{track.name} {track.instrument}")
         if named and named != track.part and named in PARTS:
             log.info(

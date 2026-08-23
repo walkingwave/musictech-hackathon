@@ -70,7 +70,22 @@ MIN_USEFUL_NOISE = 0.6
 # and stayed inside it at 0.65.
 # Bass and drums tolerate more freedom because their guides constrain
 # rhythm and register more than exact pitch.
-PART_NOISE = {"harmony": 0.65, "free": 0.65}
+# How loud the already-generated stems sit under a new part's guide.
+# The guide has to stay dominant — it carries the notes the new part plays —
+# but the band underneath is what lets the model match their room and
+# balance instead of generating into a vacuum. Pushed much past this the
+# model starts re-rendering the whole mix rather than the one part.
+ENSEMBLE_LEVEL = 0.3
+
+# How many of the existing stems go into that bed. A session collects every
+# take a user tried, and mixing all of them in makes the context a mush of
+# unrelated ideas. The most recent few are the ones being worked on.
+ENSEMBLE_MAX_TRACKS = 4
+
+# A full mix needs more freedom than a single stem: the guide is a crude
+# four-layer sketch, and holding the model to it too tightly renders the
+# sketch rather than a record.
+PART_NOISE = {"harmony": 0.65, "free": 0.65, "mix": 0.85}
 
 
 def default_noise(part: str) -> float:

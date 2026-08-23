@@ -69,6 +69,11 @@ class GenerateRequest(BaseModel):
     # Shared recording character for the whole arrangement. None inherits
     # whatever the session already agreed on.
     production: str | None = None
+    # Position among the same-role tracks in this request, so the backend can
+    # have leads trade phrases instead of all soloing at once.
+    voice_index: int = 0
+    voice_count: int = 1
+
 
 
 class AnalysisEdit(BaseModel):
@@ -173,6 +178,8 @@ def generate(request: GenerateRequest) -> dict:
                 name=pipeline.track_name(session, request.part, request.name),
                 instrument=request.instrument,
                 production=request.production,
+                voice_index=request.voice_index,
+                voice_count=request.voice_count,
             )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error

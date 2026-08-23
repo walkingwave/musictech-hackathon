@@ -158,6 +158,99 @@ def track_name(session: Session, part: Part, requested: str | None) -> str:
         if candidate not in existing:
             return candidate
     return base[:40]
+def _gate_to_activity(
+    stem: np.ndarray, analysis: Analysis, active: list[bool]
+) -> np.ndarray:
+    """Silence the bars this part is supposed to sit out.
+
+    The guide already has rests there, and the model mostly follows them —
+    but "mostly" is not an arrangement. Handed a silent stretch it will
+    happily fill it with room tone, a held note or a tail from the bar
+    before, and the space the arrangement was built around quietly
+    disappears. Gating the finished audio is what guarantees it.
+
+    Fades at the edges rather than hard cuts: a stem chopped on a sample
+    boundary clicks, and a click is more audible than the note it removed.
+    """
+    if all(active):
+        return stem
+
+    gated = np.array(stem, dtype=np.float32, copy=True)
+    fade_len = max(1, int(0.02 * SAMPLE_RATE))
+    fade_in = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+    fade_out = fade_in[::-1]
+
+    for bar, playing in zip(analysis.bars, active):
+        if playing:
+            continue
+        start = int(bar.start * SAMPLE_RATE)
+        end = min(len(gated), int(bar.end * SAMPLE_RATE))
+        if end <= start:
+            continue
+        # Fade the tail of the previous bar out and the head of the next one
+        # in, so the silence arrives and leaves smoothly.
+        head = min(fade_len, end - start)
+        gated[start:start + head] *= fade_out[:head]
+        gated[start + head:end] = 0.0
+        tail_start = max(start, end - fade_len)
+        if tail_start < end and end < len(gated):
+            gated[end:end + fade_len] *= fade_in[: len(gated) - end][:fade_len]
+
+    return gated
+
+
+
+def _ensemble_guide(
+    session: Session,
+    guide: np.ndarray,
+    exclude: str,
+    level: float,
+) -> tuple[np.ndarray, list[str]]:
+    """Mix the stems already on the timeline in under the new part's guide.
+
+    Stable Audio 3 gets one audio input, and until now that input described
+    the new part alone — so every part was generated in a vacuum and had no
+    way to sit with the others beyond sharing a key and a tempo. Putting the
+    finished stems underneath the guide means the model hears the band it is
+    joining: the room, the density, the balance, the feel.
+
+    The guide stays dominant. It carries the notes the new part must play,
+    and the bed is quiet context, not a second melody to follow — pushed too
+    loud, the model starts re-rendering the whole mix instead of one part.
+
+    Returns the combined guide and the names that went into the bed, so the
+    caller can log what the part was generated against.
+    """
+    others = session.read_stems(
+        exclude=exclude,
+        limit=config.ENSEMBLE_MAX_TRACKS,
+        # A finished mix IS the band; underneath a new part it would drown
+        # the guide and get re-rendered wholesale.
+        skip_parts=("mix",),
+    )
+    if not others or level <= 0:
+        return guide, []
+
+    bed = np.zeros(len(guide), dtype=np.float32)
+    for _, audio in others:
+        # Stems can be a hair longer or shorter than this part's guide when
+        # the bar count changed mid-session; line them up at bar 1 and take
+        # whatever overlaps.
+        n = min(len(bed), len(audio))
+        bed[:n] += audio[:n]
+
+    peak = float(np.abs(bed).max())
+    if peak < 1e-6:
+        return guide, []
+    bed = bed / peak
+
+    mixed = guide + bed * level
+    # Re-normalise to the guide's own peak: the model reads level as
+    # intensity, and a hotter input renders as a more aggressive take.
+    guide_peak = float(np.abs(guide).max()) or 1.0
+    mixed_peak = float(np.abs(mixed).max()) or 1.0
+    return (mixed * (guide_peak / mixed_peak)).astype(np.float32), [n for n, _ in others]
+
 
 
 def generate_stem(
@@ -172,6 +265,10 @@ def generate_stem(
     name: str | None = None,
     instrument: str = "",
     production: str | None = None,
+    # Which of several same-role tracks this is, so leads trade phrases and
+    # comping parts lay out for each other instead of all playing at once.
+    voice_index: int = 0,
+    voice_count: int = 1,
 ) -> StemResult:
     """Stages 2-5 for one part: arrange, render a guide, generate, align.
 
@@ -205,7 +302,13 @@ def generate_stem(
     work = _extend_analysis(analysis, bars, start_bar)
 
     # Stage 2: notes on the grid.
-    midi = arrange.arrange(part, work, vocal, sr, style=style)
+    # The seed drives the arrangement too, not just the model: regenerating
+    # a part with a new seed should give a different take, not the same notes
+    # with a different timbre.
+    midi = arrange.arrange(
+        part, work, vocal, sr, style=style, seed=seed,
+        voice_index=voice_index, voice_count=voice_count,
+    )
     midi_path = session.midi_path(name)
     midi.write(str(midi_path))
 
@@ -213,9 +316,22 @@ def generate_stem(
     guide = render_guide.render(midi, duration=work.duration, part=part)
     session.write_audio(session.guide_path(name), guide)
 
+    # Stage 3b: put the band underneath it. A part generated against only its
+    # own guide has no idea what it is joining; against the finished stems it
+    # picks up their room, density and balance. A `mix` is the whole band
+    # already, so it has nothing to join.
+    context_names: list[str] = []
+    if part != "mix":
+        guide, context_names = _ensemble_guide(
+            session, guide, exclude=name, level=config.ENSEMBLE_LEVEL
+        )
+
     # Stage 4: hand the guide to Stable Audio 3.
-    prompt = prompts.build(part, work, style, instrument, production)
-    log.info("generating %s [%s] seed=%d bars=%d", name, prompt, seed, len(work.bars))
+    prompt = prompts.build(part, work, style, instrument, production, bool(context_names))
+    log.info(
+        "generating %s [%s] seed=%d bars=%d context=%s",
+        name, prompt, seed, len(work.bars), ",".join(context_names) or "none",
+    )
 
     raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
         backend_id=backend,
@@ -228,6 +344,13 @@ def generate_stem(
 
     # Stage 5: correct whatever drift the model introduced.
     stem = align.align(raw, guide, target_bpm=work.bpm)
+
+    # Stage 6: enforce the arrangement. The guide asked this part to sit out
+    # certain bars; this makes sure it actually does, whatever the model put
+    # in the gaps.
+    stem = _gate_to_activity(
+        stem, work, arrange.activity(part, len(work.bars), voice_index, voice_count)
+    )
     session.write_audio(session.stem_path(name), stem)
 
     result = StemResult(

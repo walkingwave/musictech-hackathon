@@ -308,6 +308,8 @@ export default function App() {
         name: opts.name,
         instrument: opts.instrument,
         production: opts.production,
+        voice_index: opts.voice_index,
+        voice_count: opts.voice_count,
         backend,
         seed: opts.seed,
       });
@@ -436,19 +438,35 @@ export default function App() {
       if (bpm) setStudioBpm(bpm);
       if (key) setStudioKey(key);
       if (mode) setStudioMode(mode);
-      if (!sessionId || (!bpm && !key && !mode)) return;
+      if (!bpm && !key && !mode) return;
       try {
-        const updated = await apiClient.updateAnalysis(sessionId, {
-          bpm: bpm ?? null,
-          key: key ?? null,
-          mode: mode ?? null,
+        if (sessionId) {
+          const updated = await apiClient.updateAnalysis(sessionId, {
+            bpm: bpm ?? null,
+            key: key ?? null,
+            mode: mode ?? null,
+          });
+          setAnalysis(updated);
+          return;
+        }
+        // No session yet: create it AT these settings. Leaving it to the first
+        // generate meant the session was created from the state this call had
+        // only just asked React to update, so a "slow sad ballad" was
+        // generated at whatever the boxes said before — 120 BPM, C major —
+        // and the corrected values only landed on the next request.
+        const result = await apiClient.createBlankSession({
+          bpm: bpm ?? studioBpm,
+          key: key ?? studioKey,
+          mode: mode ?? studioMode,
+          bars,
         });
-        setAnalysis(updated);
+        setSessionId(result.session_id);
+        setAnalysis(result.analysis);
       } catch (error) {
         flash(`Tempo and key were not saved — ${error.message}`);
       }
     },
-    [sessionId, flash],
+    [sessionId, studioBpm, studioKey, studioMode, bars, flash],
   );
 
   // Words -> notes. The agent writes a phrase, it lands on a MIDI track with
