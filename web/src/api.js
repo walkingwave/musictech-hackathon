@@ -19,6 +19,9 @@ const postJSON = (path, body) =>
   });
 
 export const listBackends = () => api('/backends');
+export const listSessions = () => api('/sessions');
+export const getSession = (sessionId) => api(`/session/${sessionId}`);
+export const deleteSession = (sessionId) => api(`/session/${sessionId}`, { method: 'DELETE' });
 
 export async function analyze(blob, filename) {
   const form = new FormData();
@@ -39,8 +42,8 @@ export const generate = (body) => postJSON('/generate', body);
 export const createBlankSession = (body) => postJSON('/session/blank', body);
 
 // Interpret a plain-English request into a generation plan. The server uses
-// Claude when it has credentials and falls back to keyword matching, so this
-// always returns a plan rather than failing.
+// DeepSeek when configured and falls back to keyword matching, so this always
+// returns a plan rather than failing.
 // Played notes + a prompt -> a real instrument. The notes become the guide
 // track, so the performance survives and only the timbre is generated.
 export const generateFromMidi = (body) => postJSON('/generate-from-midi', body);

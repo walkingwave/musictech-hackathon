@@ -853,3 +853,10 @@ input[type="range"] { accent-color: var(--ink); }
 }
 .midi-editor { max-height: 52vh; }
 .midi-warn { color: var(--hot); font-weight: 400; }
+
+/* Session picker */
+.session-actions { display: flex; gap: 4px; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(0, 0, 0, .35); }
+.session-picker { width: min(520px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; padding: 20px; border: 1px solid var(--line-strong); background: var(--panel); }
+.session-row { display: flex; width: 100%; margin: 6px 0; padding: 10px; text-align: left; flex-direction: column; gap: 3px; }
+.session-row span { color: var(--muted-ink); font-size: .85em; }

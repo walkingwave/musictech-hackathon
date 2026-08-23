@@ -54,6 +54,24 @@ Open http://127.0.0.1:8000
 Works immediately on the **mock** backend — no model weights, no API key, no network.
 Use it to build and test everything except the audio quality itself.
 
+### DeepSeek chat agent
+
+The Studio ask bar calls `/api/interpret`, which uses DeepSeek when
+`DEEPSEEK_API_KEY` is set and falls back to the offline rules parser when it is
+not. DeepSeek only returns a structured generation plan; the app still executes
+the existing `/api/generate` pipeline and SA3 calls itself.
+
+1. Create a DeepSeek account and API key from the DeepSeek platform.
+2. Add the key to `.env`:
+
+```bash
+DEEPSEEK_API_KEY=your_key_here
+BTG_AGENT_PROVIDER=deepseek
+BTG_AGENT_MODEL=deepseek-v4-flash
+```
+
+Restart the backend after editing `.env`.
+
 ## Backends
 
 Pick one in the UI header, per generation. Availability is detected live, so a
@@ -78,18 +96,45 @@ The `local` backend has two runtimes and picks whichever is installed:
 On any machine without a local runtime installed, `local` shows disabled in the
 selector. Use `mock` for offline work and `api` for best quality.
 
-### Local backend: model access
+### Local backend: Stable Audio 3 MLX
 
-The weights are **gated** on Hugging Face — an anonymous download returns `401`.
+The local backend shells out to Stability AI's optimized MLX implementation. It
+is Apple-Silicon-native and stores its own virtualenv and weights outside this
+repo. By default this app looks for it at:
 
-1. Accept the licence at https://huggingface.co/stabilityai/stable-audio-3-small-music
-2. Create a token at https://huggingface.co/settings/tokens
-3. `uv run hf auth login`
-4. `uv sync --extra local`
+```text
+../sa3-mlx-src/optimized/mlx
+```
 
-Do this early. It is the one setup step that can block on someone else approving you.
+Install it with:
 
-`medium` (1.4B) is **not** an option on a Mac: it requires CUDA and Flash Attention 2.
+```bash
+cd ..
+git clone --depth=1 https://github.com/Stability-AI/stable-audio-3 sa3-mlx-src
+cd sa3-mlx-src/optimized/mlx
+./install.sh -y
+```
+
+If you install it somewhere else, set:
+
+```bash
+BTG_MLX_ROOT=/absolute/path/to/stable-audio-3/optimized/mlx
+```
+
+The app auto-detects whichever MLX weights are present and prefers `medium`
+when available, then `sm-music`. To force the faster model:
+
+```bash
+BTG_MLX_DIT=sm-music
+```
+
+Verify through this app's local backend:
+
+```bash
+uv run btg --input samples/fixtures/amin_100.wav --part bass --backend local
+```
+
+Then start this app and select the `local` backend.
 
 ## CLI
 
@@ -116,13 +161,13 @@ BPM, key, downbeat, chords, melody notes, and MIDI pitches:
 
 ```bash
 uv run analysis-test --input samples/fixtures/amin_100.wav
-uv run analysis-test --input samples/fixtures/amin_100.wav --output analysis-tests/amin-check
+uv run analysis-test --input samples/fixtures/amin_100.wav --output backend/test/test_run/amin-check
 uv run analysis-test --input samples/beatbox.wav --mode beatbox
-uv run analysis-test --clean  # remove previous analysis-test runs
+uv run analysis-test --clean  # remove prior generated test runs
 ```
 
 The default output directory is a sortable timestamp such as
-`analysis-tests/2026-08-22_16-43-09/`. The preprocessing is deliberately
+`backend/test/test_run/analysis_test_2026-08-22_16-43-09/`. The preprocessing is deliberately
 conservative: it removes DC, trims only outer silence, applies
 a content-aware high-pass filter, and normalizes with headroom. Use
 `--no-trim` or `--no-high-pass` when comparing their effect on analysis.
@@ -142,10 +187,52 @@ backend/
   pipeline.py      the only module that knows the stage order
   api.py           HTTP routes. Thin — musical logic lives in the stages.
   cli.py           headless runner
+  test/             developer validation CLIs and ignored test-run artifacts
 frontend/          plain HTML/CSS/JS, no build step
 scripts/           setup and test-fixture generation
 sessions/<id>/     vocal, guides, stems, MIDI, and a meta.json provenance record
 ```
+
+### DeepSeek validation
+
+Validate the complete analysis-to-DeepSeek planning path with an API key in `.env`:
+
+```bash
+uv run deepseek-test --input samples/fixtures/amin_100.wav \
+  --prompt "add upright bass, Rhodes, and soft bossa nova drums" \
+  --require-deepseek --expect-tracks
+```
+
+This writes a cleaned WAV, analysis metadata, redacted request/response plans, and
+`validation.json` under `backend/test/test_run/deepseek_test_<timestamp>/`. It sends
+only derived musical metadata and the request text to DeepSeek—never audio bytes,
+local paths, or credentials. Omit `--require-deepseek` to permit the offline rules
+fallback for a no-network smoke test.
+
+### Frontend interpretation-to-generation integration test
+
+With the backend running, exercise the same HTTP flow used by the Studio ask
+bar. The default `mock` backend reaches the generation adapter without loading
+SA3; use `--backend local` only for an intentional MLX SA3 smoke test.
+
+```bash
+uv run uvicorn backend.api:app --reload
+node frontend/test/interpret_generate_test.mjs --backend mock
+node frontend/test/interpret_generate_test.mjs --backend local --require-deepseek
+```
+
+Each invocation stores redacted request/response JSON and two validation
+results under `frontend/test/test_run/frontend_interpret_generate_test_<timestamp>/`.
+Run the dependency-free runner tests with `cd frontend/test && npm test`.
+
+### Sessions
+
+Projects persist under `sessions/`. Use the Studio header **Open** button to
+load a saved project, **Close** to clear it from this browser while retaining
+server files, and **Delete** to permanently remove it after confirmation.
+Deletion is rejected while that session is generating. Session list responses
+contain summaries only; audio remains available through the existing session
+audio routes.
 
 ### Adding a backing part
 

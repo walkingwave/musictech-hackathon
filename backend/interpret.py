@@ -2,12 +2,12 @@
 
 Two implementations behind one function:
 
-  Claude   real language understanding. Handles phrasing the keyword
+  DeepSeek real language understanding. Handles phrasing the keyword
            matcher cannot ("something moody for a rainy night", "swap the
            piano for a Rhodes", "same but slower"), maps instruments we
            do not have onto ones we do, and says so.
   rules    keyword matching. No network, no key, instant. Used when
-           Claude is unavailable, so the demo still works offline.
+           DeepSeek is unavailable, so the demo still works offline.
 
 The plan is deliberately explicit about *rhythm*: the groove decides
 where notes land in the guide track, and the guide is what fixes the
@@ -18,18 +18,17 @@ heard in the result, however well the style text describes it.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
-from pathlib import Path
 
+import httpx
 from pydantic import BaseModel, Field
 
-from . import grooves
+from . import config, grooves
 from .models import PARTS
 
 log = logging.getLogger(__name__)
-
-MODEL = os.environ.get("BTG_INTERPRET_MODEL", "claude-opus-5")
 
 GROOVE_NAMES = [g.name for g in grooves.ALL]
 
@@ -143,56 +142,96 @@ def interpret(text: str, context: Context | None = None) -> Plan:
     `context` describes the existing session so that a follow-up request
     adds to the arrangement rather than starting a conflicting one.
     """
+    plan, _ = interpret_with_source(text, context)
+    return plan
+
+
+def interpret_with_source(text: str, context: Context | None = None) -> tuple[Plan, str]:
+    """Best available interpretation plus the provider that actually produced it."""
     try:
-        return _interpret_with_claude(text, context)
+        return _interpret_with_deepseek(text, context), "deepseek"
     except Exception as error:  # noqa: BLE001 - any failure falls back to rules
         log.info("falling back to keyword parsing: %s", error)
-        return _interpret_with_rules(text, context)
+        return _interpret_with_rules(text, context), "rules"
 
 
-def claude_available() -> bool:
-    """Whether the Claude path can run.
-
-    Note the SDK resolves credentials from an `ant auth login` profile as
-    well as the environment, so a missing ANTHROPIC_API_KEY does not by
-    itself mean there is no key — check the profile directory too.
-
-    Constructing a client is *not* a valid check: `anthropic.Anthropic()`
-    succeeds with no credentials at all and only raises at request time.
-    """
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return True
-
-    config_dir = Path(os.environ.get("ANTHROPIC_CONFIG_DIR", Path.home() / ".config" / "anthropic"))
-    return (config_dir / "credentials").is_dir()
+def interpreter_name() -> str:
+    """Name the interpreter that will be tried first for UI/debug output."""
+    return "deepseek" if deepseek_available() else "rules"
 
 
-def _interpret_with_claude(text: str, context: Context | None) -> Plan:
-    import anthropic
+def deepseek_available() -> bool:
+    return config.BTG_AGENT_PROVIDER == "deepseek" and bool(config.DEEPSEEK_API_KEY)
 
-    system = SYSTEM
+
+def _interpret_with_deepseek(text: str, context: Context | None) -> Plan:
+    """Use DeepSeek JSON mode to produce the same Plan shape the UI already executes."""
+    if not deepseek_available():
+        raise RuntimeError("DeepSeek is not configured")
+
+    system = _deepseek_system_prompt()
     if context and (described := context.describe()):
-        system = f"{SYSTEM}\n\n{described}"
+        system = f"{system}\n\n{described}"
 
-    client = anthropic.Anthropic()
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=2048,
-        system=system,
-        messages=[{"role": "user", "content": text}],
-        output_format=Plan,
+    response = httpx.post(
+        config.DEEPSEEK_API_URL,
+        headers={
+            "Authorization": f"Bearer {config.DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": config.BTG_AGENT_MODEL,
+            "thinking": {"type": "disabled"},
+            "response_format": {"type": "json_object"},
+            "max_tokens": 1600,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ],
+        },
+        timeout=30.0,
     )
+    response.raise_for_status()
 
-    if response.stop_reason == "refusal":
-        raise RuntimeError("request declined")
+    payload = response.json()
+    content = payload["choices"][0]["message"]["content"]
+    if not content:
+        raise RuntimeError("DeepSeek returned empty content")
 
-    plan = response.parsed_output
+    plan = Plan.model_validate(json.loads(content))
     return _sanitize(plan)
+
+
+def _deepseek_system_prompt() -> str:
+    return f"""{SYSTEM}
+
+Return ONLY valid json. Do not include Markdown, prose, code fences, or comments.
+The json object must match this exact shape:
+{{
+  "tracks": [
+    {{
+      "part": "bass | piano | guitar | drums | harmony | free",
+      "name": "short track name",
+      "instrument": "complete sound description, or empty string for the default",
+      "style": "track-specific style, usually empty"
+    }}
+  ],
+  "style": "overall genre or mood, empty string if none",
+  "groove": "{' | '.join(GROOVE_NAMES)}",
+  "bpm": null,
+  "key": null,
+  "mode": null,
+  "bars": null,
+  "notes": ""
+}}
+
+Important:
+- You are not allowed to call Stable Audio 3 directly.
+- You only create a plan for this app to execute.
+- Choose `free` for unknown instruments, textures, effects, or anything with no clear rhythmic role.
+- Preserve existing session tempo, key, style, and length unless the user explicitly changes them.
+- If the user asks for a full arrangement, return bass, drums, piano, and harmony.
+"""
 
 
 def _sanitize(plan: Plan) -> Plan:
@@ -218,7 +257,7 @@ def _sanitize(plan: Plan) -> Plan:
 
 # Instrument -> (part, description). `part` is the rhythmic role the
 # arranger plays; the description becomes the prompt. Anything not listed
-# here is still handled by the Claude path; this table only has to cover
+# here is still handled by the DeepSeek path; this table only has to cover
 # enough that the offline demo is not obviously broken.
 INSTRUMENTS: dict[str, tuple[str, str]] = {
     # bass role

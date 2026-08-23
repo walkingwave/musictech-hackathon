@@ -16,7 +16,10 @@ reproduce any stem exactly.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +28,12 @@ import soundfile as sf
 
 from .config import SAMPLE_RATE, SESSIONS_DIR
 from .models import Analysis, Arrangement, StemResult
+
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -45,11 +54,17 @@ class Session:
             (session.root / subdir).mkdir(parents=True, exist_ok=True)
 
         sf.write(session.vocal_path, vocal, sr)
-        session._write_meta({"id": session_id, "analysis": None, "stems": {}})
+        now = _now()
+        session._write_meta({
+            "id": session_id, "analysis": None, "stems": {},
+            "created_at": now, "updated_at": now, "display_name": f"Untitled — {now[:19]}",
+        })
         return session
 
     @classmethod
     def load(cls, session_id: str) -> "Session":
+        if not SESSION_ID_RE.fullmatch(session_id):
+            raise FileNotFoundError(f"no such session: {session_id}")
         root = SESSIONS_DIR / session_id
         if not root.is_dir():
             raise FileNotFoundError(f"no such session: {session_id}")
@@ -95,7 +110,37 @@ class Session:
         return json.loads(self.meta_path.read_text())
 
     def _write_meta(self, meta: dict) -> None:
+        meta["updated_at"] = _now()
         self.meta_path.write_text(json.dumps(meta, indent=2))
+
+    def set_display_name(self, name: str) -> None:
+        meta = self._read_meta()
+        meta["display_name"] = name.strip()[:80] or meta.get("display_name", "Untitled")
+        self._write_meta(meta)
+
+    def summary(self) -> dict:
+        meta = self._read_meta()
+        stat = self.root.stat()
+        analysis = meta.get("analysis") or {}
+        return {
+            "id": self.id,
+            "display_name": meta.get("display_name", f"Session {self.id}"),
+            "created_at": meta.get("created_at"),
+            "updated_at": meta.get("updated_at") or datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            "analysis": None if not analysis else {
+                "bpm": analysis.get("bpm"), "key": analysis.get("key"),
+                "mode": analysis.get("mode"), "bars": len(analysis.get("bars", [])),
+            },
+            "style": (meta.get("arrangement") or {}).get("style", ""),
+            "track_names": sorted((meta.get("stems") or {}).keys()),
+        }
+
+    def delete(self) -> None:
+        root = self.root.resolve()
+        parent = SESSIONS_DIR.resolve()
+        if root.parent != parent or self.root.is_symlink():
+            raise ValueError("invalid session path")
+        shutil.rmtree(root)
 
     @property
     def analysis(self) -> Analysis:

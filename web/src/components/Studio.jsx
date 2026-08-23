@@ -3,7 +3,6 @@ import ClipView from './ClipView.jsx';
 import MidiEditor from './MidiEditor.jsx';
 import InstrumentSlot from './InstrumentSlot.jsx';
 import StudioRecorder from './StudioRecorder.jsx';
-import { parseRequest, describePlan } from '../parseRequest.js';
 import * as apiClient from '../api.js';
 
 // Timeline studio (light, on-brand) with the controls a basic DAW needs:
@@ -318,15 +317,13 @@ export default function Studio({
     setBusy(true);
     setStatus('Interpreting…');
 
-    // Server-side interpretation understands phrasing the keyword matcher
-    // cannot, and can also infer tempo and key. Fall back to the local
-    // parser only if the request itself fails.
     let plan;
     try {
       plan = await apiClient.interpret(text, sessionId);
-    } catch {
-      const { parts, style } = parseRequest(text);
-      plan = { tracks: parts.map((part) => ({ part, style: '' })), style, notes: '' };
+    } catch (e) {
+      setStatus(`Could not interpret — ${e.message}`);
+      setBusy(false);
+      return;
     }
 
     if (!plan.tracks.length) {
@@ -700,7 +697,6 @@ export default function Studio({
 // misread request costs a minute of generation.
 function AskBar({ busy, onRun, status }) {
   const [text, setText] = useState('');
-  const plan = text.trim() ? parseRequest(text) : null;
 
   const submit = (e) => {
     e.preventDefault();
@@ -716,10 +712,12 @@ function AskBar({ busy, onRun, status }) {
         onChange={(e) => setText(e.target.value)}
         disabled={busy}
       />
-      <button className="ask-go" disabled={busy || !plan?.parts.length}>
+      <button className="ask-go" disabled={busy || !text.trim()}>
         {busy ? '…' : 'Generate'}
       </button>
-      <span className="ask-plan">{status || (plan ? describePlan(plan) : '')}</span>
+      <span className="ask-plan">
+        {status || (text.trim() ? 'Ask the agent to plan and generate tracks' : '')}
+      </span>
     </form>
   );
 }

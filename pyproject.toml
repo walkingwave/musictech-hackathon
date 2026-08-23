@@ -15,7 +15,6 @@ dependencies = [
     "librosa>=0.10.2",
     "pretty_midi>=0.2.10",
     "pyrubberband>=0.3.0",
-    "anthropic>=0.69",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +28,8 @@ local = [
 
 [project.scripts]
 btg = "backend.cli:main"
-analysis-test = "backend.analysis_test_cli:main"
+analysis-test = "backend.test.analysis_test_cli:main"
+deepseek-test = "backend.test.deepseek_test_cli:main"
 
 [build-system]
 requires = ["hatchling"]
