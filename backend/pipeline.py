@@ -391,6 +391,7 @@ def generate_stem(
         noise=noise,
         duration=work.duration,
         seed=seed,
+        synthetic_guide=True,
     )
 
     # Stage 5: correct whatever drift the model introduced.
@@ -632,7 +633,7 @@ def generate_from_hum(
     ) if piece)
     raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
         backend_id=backend, prompt=full_prompt, init_audio=guide, noise=noise,
-        duration=analysis.duration, seed=seed,
+        duration=analysis.duration, seed=seed, synthetic_guide=True,
     )
     stem = audio_mix.polish(align.align(raw, guide, target_bpm=analysis.bpm), target)
     session.write_audio(session.stem_path(name), stem)
@@ -720,6 +721,7 @@ def generate_from_notes(
         noise=noise,
         duration=duration,
         seed=seed,
+        synthetic_guide=True,
     )
 
     stem = align.align(raw, guide, target_bpm=analysis.bpm)
@@ -879,6 +881,7 @@ def generate_song(
         noise=config.MASTER_STRENGTH,
         duration=work.duration,
         seed=seed,
+        synthetic_guide=True,
     )
     master = align.align(master_raw, master_guide, target_bpm=work.bpm)
     # Kept on disk for debugging and for regenerating single stems later.

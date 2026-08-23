@@ -517,6 +517,30 @@ def describe() -> list[dict]:
     ]
 
 
+def api_guide_strength(noise: float) -> float:
+    """Remap a tuned strength onto Stable Audio 3's much stickier curve.
+
+    Every strength in config was tuned where 0.75-0.8 fully re-imagines a
+    sawtooth guide (the local sm-music model and the old stable-audio-2.5
+    endpoint both behave that way: 2.5 at 0.8 correlates 0.005 with the
+    guide). The hosted SA3 model does not — measured against the same
+    melodic saw guide, same prompt, same seed:
+
+        strength   0.80   0.90   0.93   0.96   0.99
+        guide-corr 0.823  0.476  0.097  0.024  0.004
+
+    So at the tuned default SA3 was handing back the polished sawtooth —
+    every "instrument" sounded like a fried synth. All of SA3's useful
+    range for synthetic guides lives above ~0.9; this maps the tuned 0..1
+    convention into it (0.8 -> 0.96, 0.65 -> 0.93, 0.85 -> 0.97).
+
+    Applied ONLY to API generations conditioned on a synthetic guide. Real
+    audio inputs (the master-first carve) want the stickiness exactly as
+    tuned, and the local model's own curve already matches the config.
+    """
+    return min(0.99, 1.0 - (1.0 - float(noise)) * 0.2)
+
+
 def generate_with_fallback(
     backend_id: str | None,
     prompt: str,
@@ -524,6 +548,7 @@ def generate_with_fallback(
     noise: float,
     duration: float,
     seed: int,
+    synthetic_guide: bool = False,
 ) -> tuple[np.ndarray, str, str | None]:
     """Generate, degrading to a working backend if the chosen one fails.
 
@@ -533,6 +558,10 @@ def generate_with_fallback(
     value is why the *requested* backend did not run, so the UI can say
     "Stability returned HTTP 404" instead of leaving the user to wonder why
     the result sounds like the mock.
+
+    `synthetic_guide` marks `init_audio` as a rendered guide (saw/sine)
+    rather than real audio, which changes what strength means on the hosted
+    model — see api_guide_strength.
     """
     chosen = get(backend_id)
     candidates = [chosen] + [BACKENDS[i] for i in FALLBACK_ORDER if BACKENDS[i].id != chosen.id]
@@ -545,8 +574,12 @@ def generate_with_fallback(
     for backend in candidates:
         if not backend.available():
             continue
+        effective = noise
+        if backend.id == "api" and synthetic_guide and init_audio is not None:
+            effective = api_guide_strength(noise)
+            log.info("api strength %.2f -> %.2f (synthetic guide remap)", noise, effective)
         try:
-            audio = backend.generate(prompt, init_audio, noise, duration, seed)
+            audio = backend.generate(prompt, init_audio, effective, duration, seed)
             return audio, backend.id, failure if backend.id != chosen.id else None
         except Exception as error:  # noqa: BLE001 - any failure should fall through
             log.warning("backend %s failed: %s", backend.id, error)
