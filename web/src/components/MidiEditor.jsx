@@ -20,6 +20,7 @@ export default function MidiEditor({
   onBeginEdit,
   onRender,
   instruments,
+  sampler,
   onLoadInstrument,
 }) {
   const [recording, setRecording] = useState(false);
@@ -31,9 +32,16 @@ export default function MidiEditor({
   const startedAtRef = useRef(0);
   const ctxRef = useRef(null);
 
-  // Monitoring only — a blip so the controller responds immediately. The
-  // real sound arrives when the clip is rendered.
+  // Monitor a played key. Once the track's instrument is sampled this is
+  // the real sound, not an approximation of it — the same sampler the
+  // timeline plays through.
   const blip = useCallback((pitch, velocity = 90) => {
+    if (track.instrument && sampler?.isLoaded(track.instrument)) {
+      const ctx = sampler.context();
+      ctx.resume();
+      sampler.play(track.instrument, pitch, ctx.currentTime, 0.6, { gain: velocity / 127 });
+      return;
+    }
     if (!ctxRef.current) ctxRef.current = new AudioContext();
     const ctx = ctxRef.current;
     ctx.resume();
@@ -46,7 +54,7 @@ export default function MidiEditor({
     osc.connect(gain).connect(ctx.destination);
     osc.start();
     osc.stop(ctx.currentTime + 0.31);
-  }, []);
+  }, [track.instrument, sampler]);
 
   // A played note arrives on release, when its length is finally known.
   const onPlayedNote = useCallback(
@@ -106,6 +114,8 @@ export default function MidiEditor({
         <InstrumentSlot
           instrument={track.instrument}
           instruments={instruments}
+          loading={sampler?.loading}
+          ready={sampler?.isLoaded(track.instrument)}
           onLoad={onLoadInstrument}
           onClear={() => onLoadInstrument(null)}
         />

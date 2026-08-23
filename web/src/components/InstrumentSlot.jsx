@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 // the notes untouched, which is the point: the part is the part, and the
 // sound is a choice you can change your mind about.
 
-export default function InstrumentSlot({ instrument, instruments, onLoad, onClear, compact }) {
+export default function InstrumentSlot({ instrument, instruments, onLoad, onClear, compact, loading, ready }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -24,11 +24,17 @@ export default function InstrumentSlot({ instrument, instruments, onLoad, onClea
   return (
     <div className={`slot${compact ? ' compact' : ''}`} ref={ref}>
       <button
-        className={`slot-btn${instrument ? ' loaded' : ''}`}
+        className={`slot-btn${instrument ? ' loaded' : ''}${loading === instrument?.id ? ' busy' : ''}`}
         onClick={() => setOpen((v) => !v)}
         title={instrument ? instrument.prompt : 'Load an instrument into this track'}
       >
-        {instrument ? instrument.name : 'empty slot'}
+        {!instrument
+          ? 'empty slot'
+          : loading === instrument.id
+            ? 'sampling…'
+            : ready
+              ? instrument.name
+              : `${instrument.name} ·`}
       </button>
 
       {open && (

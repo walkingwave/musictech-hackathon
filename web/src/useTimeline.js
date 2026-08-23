@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // A clip-based multitrack timeline. Tracks hold clips; each clip is a decoded
 // AudioBuffer placed at an arbitrary start time, so a backing stem can be
@@ -19,7 +19,7 @@ const uid = (p) => `${p}-${++counter}`;
 
 const HISTORY_LIMIT = 100;
 
-export function useTimeline() {
+export function useTimeline(sampler) {
   const ctxRef = useRef(null);
   const buffersRef = useRef({}); // clipId -> AudioBuffer
   const nodesRef = useRef([]); // active source nodes during playback
@@ -29,6 +29,11 @@ export function useTimeline() {
   const rafRef = useRef(null);
 
   const [tracks, setTracks] = useState([]);
+  // Tempo, so MIDI clips can turn their beat-based notes into seconds.
+  const bpmRef = useRef(100);
+  const setBpm = useCallback((value) => {
+    bpmRef.current = value || 100;
+  }, []);
 
   // --- undo / redo -------------------------------------------------------
   //
@@ -97,6 +102,12 @@ export function useTimeline() {
       for (const c of t.clips) max = Math.max(max, c.start + c.duration);
     return max;
   }, [tracks]);
+
+  // The sampler needs the same AudioContext as the transport, or notes
+  // scheduled against one clock play against another.
+  useEffect(() => {
+    if (sampler?.context) ctxRef.current = sampler.context();
+  }, [sampler]);
 
   const getBuffer = useCallback((clipId) => buffersRef.current[clipId], []);
 
@@ -497,6 +508,24 @@ export function useTimeline() {
         gain.connect(ctx.destination);
         gainsRef.current[t.id] = gain;
         t.clips.forEach((c) => {
+          // A MIDI clip has no audio of its own: its notes are triggered
+          // on the track's sampler, so the part plays exactly as written
+          // and editing never needs a re-render.
+          if (Array.isArray(c.notes) && t.instrument && sampler?.isLoaded(t.instrument)) {
+            const secondsPerBeat = 60 / (c.bpm || bpmRef.current || 100);
+            c.notes.forEach((n) => {
+              const at = c.start + n.start * secondsPerBeat;
+              const length = Math.max(0.05, n.length * secondsPerBeat);
+              if (at + length <= from) return;
+              const offset = Math.max(0, from - at);
+              sampler.play(t.instrument, n.pitch, startAt + (at - from) + offset, length - offset, {
+                gain: (n.velocity ?? 90) / 127,
+                destination: gain,
+              });
+            });
+            return;
+          }
+
           const buffer = buffersRef.current[c.id];
           if (!buffer) return;
           const clipEnd = c.start + c.duration;
@@ -541,7 +570,7 @@ export function useTimeline() {
       };
       rafRef.current = requestAnimationFrame(tick);
     },
-    [context, stopNodes, tracks, applyTrackGains, duration, stop],
+    [context, stopNodes, tracks, applyTrackGains, duration, stop, sampler],
   );
 
   const pause = useCallback(() => {
@@ -589,6 +618,7 @@ export function useTimeline() {
     seek,
     loop,
     setLoop,
+    setBpm,
     beginGesture,
     undo,
     redo,

@@ -45,6 +45,10 @@ export const createBlankSession = (body) => postJSON('/session/blank', body);
 // track, so the performance survives and only the timbre is generated.
 export const generateFromMidi = (body) => postJSON('/generate-from-midi', body);
 
+// One-shot samples for an instrument. Cached server-side by prompt, so
+// loading the same instrument again costs nothing.
+export const instrumentSamples = (body) => postJSON('/instrument/samples', body);
+
 export const interpret = (text, sessionId) =>
   postJSON('/interpret', { text, session_id: sessionId ?? null });
 

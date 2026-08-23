@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import soundfile as sf
 
-from . import config, interpret, pipeline, sa3_backend
+from . import config, instruments, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -197,6 +197,61 @@ def interpret_request(request: InterpretRequest) -> dict:
 
     plan = interpret.interpret(request.text, context)
     return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
+
+
+class SamplesRequest(BaseModel):
+    prompt: str
+    pitches: list[int] | None = None
+    backend: str | None = None
+    seed: int | None = None
+    force: bool = False
+
+
+@app.post("/api/instrument/samples")
+def instrument_samples(request: SamplesRequest) -> dict:
+    """Generate one sustained one-shot per pitch for an instrument.
+
+    The browser then plays MIDI through these, so the notes are exactly
+    what was played and editing needs no further generation. Results are
+    cached by prompt, so loading the same instrument again is free.
+    """
+    if not request.prompt.strip():
+        raise HTTPException(400, "an instrument needs a description")
+
+    pitches = tuple(request.pitches or instruments.DEFAULT_PITCHES)
+    try:
+        made = instruments.generate_samples(
+            request.prompt,
+            pitches=pitches,
+            backend=request.backend,
+            seed=request.seed,
+            force=request.force,
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    ident = instruments.instrument_id(request.prompt)
+    return {
+        "instrument_id": ident,
+        "samples": [
+            {
+                "pitch": s["pitch"],
+                # What the sample actually sounds, which is not always what
+                # was asked for. The sampler transposes from this.
+                "actual_pitch": s["actual_pitch"],
+                "url": f"/api/instrument/{ident}/{s['pitch']}.wav",
+            }
+            for s in made
+        ],
+    }
+
+
+@app.get("/api/instrument/{ident}/{pitch}.wav")
+def instrument_sample(ident: str, pitch: int) -> FileResponse:
+    path = config.CACHE_DIR / "instruments" / ident / f"{pitch}.wav"
+    if not path.is_file():
+        raise HTTPException(404, "sample not found")
+    return FileResponse(path, media_type="audio/wav")
 
 
 class MidiNote(BaseModel):

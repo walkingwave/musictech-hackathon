@@ -43,7 +43,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 export default function Studio({
   engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
   onGenerateStem, onGenerateFromReference, onRenderMidi, sessionId,
-  instruments = [], onCreateInstrument,
+  instruments = [], onCreateInstrument, sampler, backend,
 }) {
   const {
     tracks,
@@ -375,6 +375,24 @@ export default function Studio({
     setBusy(false);
   };
 
+  // Loading an instrument into a slot generates its one-shots, after which
+  // the part plays through the sampler. Notes are never regenerated, so
+  // editing after this is instant.
+  const loadInstrument = async (track, instrument) => {
+    setTrackProp(track.id, 'instrument', instrument);
+    if (!instrument) return;
+    if (sampler.isLoaded(instrument)) return;
+    setBusy(true);
+    setStatus(`Sampling ${instrument.name}…`);
+    try {
+      await sampler.load(instrument, { backend });
+      setStatus('');
+    } catch (e) {
+      setStatus(`Could not sample ${instrument.name} — ${e.message}`);
+    }
+    setBusy(false);
+  };
+
   // Render a MIDI clip: its notes become the guide, the track's instrument
   // prompt becomes the sound. The notes stay on the clip afterwards, so it
   // can be edited and re-rendered.
@@ -557,6 +575,8 @@ export default function Studio({
               track={t}
               height={LANE_H}
               instruments={instruments}
+              sampler={sampler}
+              onLoadInstrument={(i) => loadInstrument(t, i)}
               onProp={(p, v) => setTrackProp(t.id, p, v)}
               onRemove={() => removeTrack(t.id)}
             />
@@ -631,7 +651,8 @@ export default function Studio({
           onBeginEdit={beginGesture}
           onNotesChange={(notes) => setClipNotes(selTrack.id, selClip.id, notes)}
           instruments={instruments}
-          onLoadInstrument={(i) => setTrackProp(selTrack.id, 'instrument', i)}
+          sampler={sampler}
+          onLoadInstrument={(i) => loadInstrument(selTrack, i)}
           onCreateInstrument={onCreateInstrument}
           onRender={renderMidiClip}
         />
@@ -910,7 +931,7 @@ function Ruler({ width, height, secondsPerBar, pps, loop, onDown }) {
   );
 }
 
-function TrackHeader({ track, height, instruments, onProp, onRemove }) {
+function TrackHeader({ track, height, instruments, sampler, onLoadInstrument, onProp, onRemove }) {
   return (
     <div className="track-header" style={{ height }}>
       <span className="th-color" style={{ background: KIND_COLOR[track.kind] || '#c4d4d6' }} />
@@ -926,8 +947,10 @@ function TrackHeader({ track, height, instruments, onProp, onRemove }) {
             compact
             instrument={track.instrument}
             instruments={instruments}
-            onLoad={(i) => onProp('instrument', i)}
-            onClear={() => onProp('instrument', null)}
+            loading={sampler?.loading}
+            ready={sampler?.isLoaded(track.instrument)}
+            onLoad={onLoadInstrument}
+            onClear={() => onLoadInstrument(null)}
           />
         )}
         <div className="th-controls">

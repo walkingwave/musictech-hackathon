@@ -3,6 +3,7 @@ import * as apiClient from './api.js';
 import { blobToWav } from './wav.js';
 import { useTimeline } from './useTimeline.js';
 import { useInstruments } from './useInstruments.js';
+import { useSampler } from './useSampler.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
 import Studio from './components/Studio.jsx';
@@ -31,8 +32,12 @@ export default function App() {
   const [studioKey, setStudioKey] = useState('C');
   const [studioMode, setStudioMode] = useState('major');
 
-  const engine = useTimeline();
+  const sampler = useSampler();
+  const engine = useTimeline(sampler);
   const library = useInstruments();
+
+  // MIDI notes are stored in beats, so playback needs the current tempo.
+  useEffect(() => engine.setBpm(studioBpm), [engine, studioBpm]);
   const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
   const vocalAddedRef = useRef(false);
 
@@ -296,6 +301,8 @@ export default function App() {
           onRenderMidi={renderMidi}
           sessionId={sessionId}
           instruments={library.instruments}
+          sampler={sampler}
+          backend={backend}
         />
       )}
 
