@@ -70,7 +70,28 @@ body {
 .session .label { color: var(--muted); letter-spacing: 0.12em; }
 .session .value { color: var(--ink); }
 
-.tabs { margin-left: auto; display: flex; }
+.model-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  padding: 0 1.25rem;
+  border-left: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.model-select .label { color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; }
+.model-select select {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+}
+
+.tabs { display: flex; }
 .tab {
   padding: 0 1.75rem;
   border-left: 1px solid var(--line);

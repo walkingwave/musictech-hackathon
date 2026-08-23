@@ -94,24 +94,33 @@ class MockBackend:
 
 
 # --- local --------------------------------------------------------------
+#
+# "local" is a single option in the UI, but Stable Audio 3 ships two very
+# different local runtimes and which one can run depends on the machine:
+#
+#   MLX   Stability's Apple-Silicon build. A separate checkout with its own
+#         venv, driven as a subprocess. Fast on a Mac, exists nowhere else.
+#   Torch The PyTorch package (`stable_audio_3`), imported in-process. Runs
+#         on any platform — CPU everywhere, CUDA on NVIDIA — so it is what
+#         makes the local backend work on Windows and Linux. The `small`
+#         DiTs run on CPU; `medium` needs CUDA and Flash Attention 2.
+#
+# LocalBackend picks whichever runtime is actually installed, preferring MLX
+# on a Mac because it is the faster of the two there.
 
 
-class LocalBackend:
-    """Stability's MLX build, running on Apple Silicon.
+class _MLXRuntime:
+    """Stability's MLX build, running on Apple Silicon as a subprocess.
 
-    Invoked as a subprocess rather than imported: the MLX stack ships as
-    its own checkout with its own virtualenv, and shelling out keeps its
-    dependency tree (mlx, its own numpy pin) completely separate from
-    ours. The cost is a process launch per generation, which is small
-    next to sampling time.
+    Shelling out rather than importing keeps the MLX stack's dependency tree
+    (mlx, its own numpy pin) completely separate from ours. The cost is a
+    process launch per generation, which is small next to sampling time.
     """
 
-    id = "local"
-    label = f"Local — {config.MLX_DIT} (MLX)"
-    note = "free, offline, no account needed"
+    label = f"{config.MLX_DIT} (MLX)"
 
     def available(self) -> bool:
-        installed = (config.MLX_ROOT / ".venv" / "bin" / "python").is_file()
+        installed = config.mlx_venv_python().is_file()
         # Weights are checked too, not just the install. The MLX CLI
         # silently downloads anything missing, which presents as a hang.
         return installed and config.mlx_weights_present(config.MLX_DIT)
@@ -122,7 +131,7 @@ class LocalBackend:
             out_path = Path(workdir) / "out.wav"
 
             command = [
-                str(config.MLX_ROOT / ".venv" / "bin" / "python"),
+                str(config.mlx_venv_python()),
                 str(config.MLX_ROOT / "scripts" / "sa3_mlx.py"),
                 "--prompt", prompt,
                 "--dit", config.MLX_DIT,
@@ -154,6 +163,108 @@ class LocalBackend:
 
             audio, _ = sf.read(out_path, dtype="float32")
             return _to_mono_numpy(audio)
+
+
+class _TorchRuntime:
+    """The PyTorch `stable_audio_3` package, run in-process.
+
+    Installed with `uv sync --extra local`. Works on any platform, which is
+    what gives Windows and Linux a real local model. The model is loaded
+    lazily and kept, so the first generation pays the load cost and the rest
+    do not — the constructor still stays cheap, as the Backend protocol asks.
+    """
+
+    label = f"{config.TORCH_DIT} (PyTorch)"
+
+    def __init__(self):
+        self._model = None
+
+    def available(self) -> bool:
+        # Import-only check: cheap, and it does not touch the (gated) weights.
+        # A missing weight or a missing HF login surfaces at generate time and
+        # is caught by the fallback, same as any other backend failure.
+        import importlib.util
+
+        return (
+            importlib.util.find_spec("stable_audio_3") is not None
+            and importlib.util.find_spec("torch") is not None
+        )
+
+    def _load(self):
+        if self._model is None:
+            from stable_audio_3 import StableAudioModel
+
+            log.info("loading stable_audio_3 %s (first run only)", config.TORCH_DIT)
+            model = StableAudioModel.from_pretrained(config.TORCH_DIT)
+            # Prefer CUDA when the build exposes it; small DiTs run on CPU too.
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    model = model.to("cuda")
+            except Exception:  # noqa: BLE001 - device move is best-effort
+                pass
+            self._model = model
+        return self._model
+
+    def generate(self, prompt, init_audio, noise, duration, seed):
+        import torch
+
+        model = self._load()
+
+        kwargs = dict(prompt=prompt, duration=int(round(duration)))
+        if init_audio is not None:
+            # torchaudio's convention: (channels, samples) float tensor + rate.
+            waveform = torch.from_numpy(np.ascontiguousarray(init_audio)).unsqueeze(0)
+            kwargs["init_audio"] = (waveform, config.SAMPLE_RATE)
+            kwargs["init_noise_level"] = float(noise)
+        if seed is not None:
+            kwargs["seed"] = int(seed)
+
+        log.info("torch: %s dit=%s noise=%s", prompt[:60], config.TORCH_DIT,
+                 f"{noise:.2f}" if init_audio is not None else "text-to-audio")
+        try:
+            audio = model.generate(**kwargs)
+        except TypeError:
+            # Older/newer builds may not accept `seed`; retry without it rather
+            # than failing the whole backend over one optional kwarg.
+            kwargs.pop("seed", None)
+            audio = model.generate(**kwargs)
+
+        return _torch_to_mono_numpy(audio)
+
+
+class LocalBackend:
+    """The local Stable Audio 3 model, on whatever runtime this machine has.
+
+    MLX on Apple Silicon (faster there), PyTorch everywhere else. Presented
+    as one `local` option so the UI does not have to know which is running.
+    """
+
+    id = "local"
+    note = "free, offline, no account needed"
+
+    def __init__(self):
+        # MLX first: on a Mac it is the faster runtime; off a Mac it is never
+        # available, so this collapses to the PyTorch runtime elsewhere.
+        self._runtimes = [_MLXRuntime(), _TorchRuntime()]
+
+    def _active(self):
+        return next((r for r in self._runtimes if r.available()), None)
+
+    @property
+    def label(self) -> str:
+        active = self._active()
+        return f"Local — {active.label}" if active else "Local (not installed)"
+
+    def available(self) -> bool:
+        return self._active() is not None
+
+    def generate(self, prompt, init_audio, noise, duration, seed):
+        active = self._active()
+        if active is None:
+            raise RuntimeError("no local runtime installed (MLX or PyTorch)")
+        return active.generate(prompt, init_audio, noise, duration, seed)
 
 
 # --- api ----------------------------------------------------------------
@@ -279,6 +390,20 @@ def _cache_key(prompt: str, init_audio: np.ndarray, noise: float, duration: floa
     digest.update(init_audio.tobytes())
     digest.update(f"{noise}|{duration}|{seed}".encode())
     return digest.hexdigest()
+
+
+def _torch_to_mono_numpy(audio) -> np.ndarray:
+    """Whatever `StableAudioModel.generate` returned -> mono float32 numpy.
+
+    Builds differ: some return a bare tensor, some a (waveform, sample_rate)
+    tuple like torchaudio.load. Handle both, and move off the GPU/autograd
+    before converting.
+    """
+    if isinstance(audio, tuple):
+        audio = audio[0]
+    if hasattr(audio, "detach"):  # a torch.Tensor
+        audio = audio.detach().to("cpu").numpy()
+    return _to_mono_numpy(audio)
 
 
 def _to_mono_numpy(audio) -> np.ndarray:

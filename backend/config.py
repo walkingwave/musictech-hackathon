@@ -7,6 +7,7 @@ Values come from the environment (see .env.example), with safe defaults.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # --- paths -------------------------------------------------------------
@@ -153,6 +154,19 @@ def default_mlx_dit() -> str:
 
 
 MLX_DIT = default_mlx_dit()
+
+
+def mlx_venv_python() -> Path:
+    """Path to the MLX checkout's venv interpreter, per platform.
+
+    The MLX stack is Apple-Silicon-only, so on Windows this file simply will
+    not exist and the local backend reports itself unavailable — but the venv
+    layout still differs by OS (`Scripts/python.exe` vs `bin/python`), so
+    resolve it correctly rather than assuming POSIX.
+    """
+    if sys.platform == "win32":
+        return MLX_ROOT / ".venv" / "Scripts" / "python.exe"
+    return MLX_ROOT / ".venv" / "bin" / "python"
 
 
 def ensure_dirs() -> None:

@@ -297,6 +297,9 @@ export default function App() {
         onView={setView}
         sessionName={fileName || 'Untitled'}
         tracksReady={engine.tracks.length > 0}
+        backends={backends}
+        backend={backend}
+        onBackend={selectBackend}
       />
 
       {view === 'instrument' ? (

@@ -12,6 +12,7 @@ Two corrections, in order:
 from __future__ import annotations
 
 import logging
+import shutil
 
 import librosa
 import numpy as np
@@ -25,6 +26,33 @@ log = logging.getLogger(__name__)
 # produced something rhythmically unrelated and stretching it just makes
 # artifacts; better to leave it alone and let the user regenerate.
 MAX_STRETCH = 1.25
+
+# rubberband is a native binary (Homebrew on macOS, choco/scoop or a manual
+# download on Windows) and pyrubberband shells out to it. When it is not on
+# PATH we fall back to librosa's phase vocoder — pure Python, so the app works
+# on any platform out of the box. rubberband still sounds better on percussive
+# material, so we prefer it when present and only warn once when we cannot.
+_HAVE_RUBBERBAND = shutil.which("rubberband") is not None
+_warned_no_rubberband = False
+
+
+def _time_stretch(audio: np.ndarray, ratio: float) -> np.ndarray:
+    """Stretch by `ratio` using rubberband if available, else librosa.
+
+    `ratio` follows pyrubberband's convention: >1 speeds up (shortens),
+    <1 slows down. librosa.effects.time_stretch uses the same convention.
+    """
+    global _warned_no_rubberband
+    if _HAVE_RUBBERBAND:
+        return pyrubberband.time_stretch(audio, SAMPLE_RATE, ratio).astype(np.float32)
+
+    if not _warned_no_rubberband:
+        log.warning(
+            "rubberband binary not found; using librosa phase vocoder for "
+            "time-stretching. Install rubberband for higher-quality alignment."
+        )
+        _warned_no_rubberband = True
+    return librosa.effects.time_stretch(audio, rate=ratio).astype(np.float32)
 
 
 def align(stem: np.ndarray, guide: np.ndarray, target_bpm: float) -> np.ndarray:
@@ -58,7 +86,7 @@ def _match_tempo(stem: np.ndarray, target_bpm: float) -> np.ndarray:
         log.warning("stretch ratio %.3f out of range; leaving stem unstretched", ratio)
         return stem
 
-    return pyrubberband.time_stretch(stem, SAMPLE_RATE, ratio).astype(np.float32)
+    return _time_stretch(stem, ratio)
 
 
 def _match_phase(stem: np.ndarray, guide: np.ndarray) -> np.ndarray:

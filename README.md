@@ -28,14 +28,24 @@ correct skeleton and a real instrument's timbre.
 
 ## Setup
 
+**macOS / Linux:**
+
 ```bash
 ./scripts/setup.sh
 ```
 
-That installs `uv`, the `rubberband` binary, and the Python dependencies. Then:
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+Either installs `uv`, the `rubberband` binary, and the Python dependencies. On
+Windows `rubberband` is optional — without it the pipeline falls back to
+librosa's phase vocoder, so stem generation still works out of the box. Then:
 
 ```bash
-cp .env.example .env      # optional, for the API backend
+cp .env.example .env      # optional, for the API backend  (Windows: copy .env.example .env)
 uv run uvicorn backend.api:app --reload
 ```
 
@@ -71,9 +81,20 @@ which one actually ran.
 
 | Backend | Setup | Notes |
 |---|---|---|
-| `mock` | none | Returns the guide with noise. For UI work and offline demos. |
-| `local` | Stable Audio 3 optimized MLX checkout | Free, offline, runs on Apple Silicon. |
-| `api` | `STABILITY_API_KEY` in `.env` | `large` 2.7B. Best quality, uses credits, needs network. |
+| `mock` | none | Returns the guide with noise. For UI work and offline demos. Runs anywhere. |
+| `local` | `uv sync --extra local` + HF access | `small-music` 0.6B. Free, offline. Runs on any OS — see runtimes below. |
+| `api` | `STABILITY_API_KEY` in `.env` | `large` 2.7B. Best quality, uses credits, needs network. Runs anywhere. |
+
+The `local` backend has two runtimes and picks whichever is installed:
+
+- **PyTorch** (`uv sync --extra local`) — Windows, Linux, macOS. `small-music`
+  runs on **CPU** (works with no GPU, and on AMD, where PyTorch has no CUDA
+  path); `medium` needs an NVIDIA GPU with CUDA + Flash Attention 2. CPU
+  generation is slow but real. Set the DiT with `BTG_TORCH_DIT`.
+- **MLX** — Apple Silicon only, faster there. Preferred automatically on a Mac.
+
+On any machine without a local runtime installed, `local` shows disabled in the
+selector. Use `mock` for offline work and `api` for best quality.
 
 ### Local backend: Stable Audio 3 MLX
 
