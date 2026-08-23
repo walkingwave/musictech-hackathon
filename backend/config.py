@@ -15,7 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = REPO_ROOT / "sessions"
 CACHE_DIR = REPO_ROOT / ".cache"
-FRONTEND_DIR = REPO_ROOT / "frontend"
+WEB_DIST_DIR = REPO_ROOT / "web" / "dist"
 
 
 def _load_dotenv() -> None:

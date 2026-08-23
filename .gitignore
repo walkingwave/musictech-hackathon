@@ -5,7 +5,7 @@ __pycache__/
 sessions/
 analysis-tests/
 backend/test/test_run/
-frontend/test/test_run/
+web/test/test_run/
 out/
 .cache/
 .DS_Store
