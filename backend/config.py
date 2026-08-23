@@ -7,6 +7,7 @@ Values come from the environment (see .env.example), with safe defaults.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # --- paths -------------------------------------------------------------
@@ -69,6 +70,16 @@ STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
 STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-3/audio-to-audio"
 
+# --- local PyTorch backend ---------------------------------------------
+
+# Which DiT the in-process PyTorch runtime loads (Windows/Linux, and any
+# machine without MLX). `small-music` (433M) runs on CPU, so it works with no
+# GPU at all — the right default on AMD hardware, where PyTorch has no CUDA
+# path and falls back to CPU. `medium` sounds better but needs an NVIDIA GPU
+# with CUDA and Flash Attention 2. Weights are gated on HuggingFace, same as
+# the MLX ones, so `uv run hf auth login` is required before first use.
+TORCH_DIT = os.environ.get("BTG_TORCH_DIT", "small-music")
+
 # --- local MLX backend -------------------------------------------------
 
 # Stability's Apple Silicon build, installed separately as a sibling
@@ -126,6 +137,19 @@ def default_mlx_dit() -> str:
 
 
 MLX_DIT = default_mlx_dit()
+
+
+def mlx_venv_python() -> Path:
+    """Path to the MLX checkout's venv interpreter, per platform.
+
+    The MLX stack is Apple-Silicon-only, so on Windows this file simply will
+    not exist and the local backend reports itself unavailable — but the venv
+    layout still differs by OS (`Scripts/python.exe` vs `bin/python`), so
+    resolve it correctly rather than assuming POSIX.
+    """
+    if sys.platform == "win32":
+        return MLX_ROOT / ".venv" / "Scripts" / "python.exe"
+    return MLX_ROOT / ".venv" / "bin" / "python"
 
 
 def ensure_dirs() -> None:

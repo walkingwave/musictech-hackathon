@@ -162,7 +162,7 @@ Single page, vanilla JS, WaveSurfer.js for waveforms, Web Audio API for synchron
 
 ## Dependencies
 
-`uv` (install first — system Python is 3.9.6 and unusable for this), Python 3.11, `stable-audio-3`, `fastapi`, `uvicorn`, `librosa`, `soundfile`, `numpy`, `scipy`, `pretty_midi`, `pyrubberband` (needs the `rubberband` binary via Homebrew), `httpx`, `python-multipart`.
+`uv` (install first — system Python is 3.9.6 and unusable for this), Python 3.11, `stable-audio-3`, `fastapi`, `uvicorn`, `librosa`, `soundfile`, `numpy`, `scipy`, `pretty_midi`, `pyrubberband` (uses the `rubberband` binary via Homebrew on macOS / choco or scoop on Windows; falls back to librosa's phase vocoder when the binary is absent), `httpx`, `python-multipart`.
 
 ## Build order (24h)
 
