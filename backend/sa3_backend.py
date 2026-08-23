@@ -48,12 +48,16 @@ class Backend(Protocol):
     def generate(
         self,
         prompt: str,
-        init_audio: np.ndarray,
+        init_audio: np.ndarray | None,
         noise: float,
         duration: float,
         seed: int,
     ) -> np.ndarray:
         """Guide audio + prompt -> generated mono audio at config.SAMPLE_RATE.
+
+        `init_audio` may be None, in which case the model generates from the
+        prompt alone. That matters for instrument samples: conditioning a
+        flute on a sawtooth makes it inherit the sawtooth.
 
         `noise` is 0..1, higher meaning more divergence from `init_audio`.
         Both the local model's `init_noise_level` and the API's `strength`
@@ -82,6 +86,9 @@ class MockBackend:
 
     def generate(self, prompt, init_audio, noise, duration, seed):
         rng = np.random.default_rng(seed)
+        if init_audio is None:
+            n = int(duration * config.SAMPLE_RATE)
+            return (rng.standard_normal(n).astype(np.float32) * 0.05)
         grain = rng.standard_normal(len(init_audio)).astype(np.float32) * 0.05
         return ((1 - noise) * init_audio + noise * (init_audio + grain)).astype(np.float32)
 
@@ -114,15 +121,10 @@ class LocalBackend:
             guide_path = Path(workdir) / "guide.wav"
             out_path = Path(workdir) / "out.wav"
 
-            # The MLX CLI wants 44.1kHz 16-bit PCM specifically.
-            sf.write(guide_path, init_audio, config.SAMPLE_RATE, subtype="PCM_16")
-
             command = [
                 str(config.MLX_ROOT / ".venv" / "bin" / "python"),
                 str(config.MLX_ROOT / "scripts" / "sa3_mlx.py"),
                 "--prompt", prompt,
-                "--init-audio", str(guide_path),
-                "--init-noise-level", str(noise),
                 "--dit", config.MLX_DIT,
                 "--decoder", config.MLX_DECODERS[config.MLX_DIT],
                 "--seconds", str(int(round(duration))),
@@ -131,7 +133,15 @@ class LocalBackend:
                 "--out", str(out_path),
             ]
 
-            log.info("mlx: %s dit=%s noise=%.2f", prompt[:60], config.MLX_DIT, noise)
+            # No guide means text-to-audio: the model builds the sound from
+            # the prompt alone rather than reshaping something.
+            if init_audio is not None:
+                # The MLX CLI wants 44.1kHz 16-bit PCM specifically.
+                sf.write(guide_path, init_audio, config.SAMPLE_RATE, subtype="PCM_16")
+                command += ["--init-audio", str(guide_path), "--init-noise-level", str(noise)]
+
+            log.info("mlx: %s dit=%s noise=%s", prompt[:60], config.MLX_DIT,
+                     f"{noise:.2f}" if init_audio is not None else "text-to-audio")
             result = subprocess.run(
                 command, cwd=config.MLX_ROOT, capture_output=True, text=True, timeout=900
             )
@@ -165,6 +175,8 @@ class StabilityAPIBackend:
 
     def generate(self, prompt, init_audio, noise, duration, seed):
         cache_key = _cache_key(prompt, init_audio, noise, duration, seed)
+        if init_audio is None:
+            raise RuntimeError("the hosted endpoint requires a guide track")
         cached = config.CACHE_DIR / f"{cache_key}.wav"
         if cached.exists():
             log.info("api cache hit %s", cache_key[:8])
@@ -230,7 +242,7 @@ def describe() -> list[dict]:
 def generate_with_fallback(
     backend_id: str | None,
     prompt: str,
-    init_audio: np.ndarray,
+    init_audio: np.ndarray | None,
     noise: float,
     duration: float,
     seed: int,

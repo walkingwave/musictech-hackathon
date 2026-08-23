@@ -9,15 +9,25 @@ import { useCallback, useEffect, useState } from 'react';
 
 const STORAGE_KEY = 'btg.instruments';
 
+// Written for a sampler, which is a narrower brief than it looks: each
+// has to be one instrument, playing one note, that can be transposed. The
+// backend appends the "single note, monophonic, dry" constraints, so these
+// describe only the sound. Words like "chord", "ensemble" or "pad" are
+// avoided on purpose — there is no single pitch in a chord to sample, and
+// the ones that named one produced samples whose pitch wandered an octave.
 const FACTORY = [
-  { id: 'f-lead', name: 'Analog Lead', prompt: 'warm analog synth lead, slight detune, round attack' },
-  { id: 'f-nylon', name: 'Nylon Guitar', prompt: 'plucked nylon-string guitar, close-miked, intimate' },
-  { id: 'f-rhodes', name: 'Electric Piano', prompt: 'glassy electric piano, light chorus, soft velocity' },
-  { id: 'f-cello', name: 'Cello', prompt: 'bowed cello, expressive vibrato, rosin and body' },
-  { id: 'f-flute', name: 'Flute', prompt: 'breathy wooden flute, airy tone' },
-  { id: 'f-bass', name: 'Synth Bass', prompt: 'gritty distorted synth bass, analog filter' },
-  { id: 'f-vibes', name: 'Vibraphone', prompt: 'vibraphone, motor vibrato, soft mallets' },
-  { id: 'f-choir', name: 'Choir', prompt: 'warm choir pad, sustained aahs, cathedral space' },
+  { id: 'f-flute', name: 'Flute', prompt: 'wooden concert flute, breathy airy tone' },
+  { id: 'f-nylon', name: 'Nylon Guitar', prompt: 'nylon-string classical guitar, warm fingerpicked' },
+  { id: 'f-cello', name: 'Cello', prompt: 'bowed cello, warm and woody, rosin on the string' },
+  { id: 'f-rhodes', name: 'Electric Piano', prompt: 'electric piano, glassy bell-like tine' },
+  { id: 'f-vibes', name: 'Vibraphone', prompt: 'vibraphone, struck metal bar, soft mallet' },
+  { id: 'f-voice', name: 'Voice', prompt: 'single female voice singing aah, warm and clear' },
+  { id: 'f-lead', name: 'Analog Lead', prompt: 'analog synthesizer lead, warm sawtooth, slight detune' },
+  { id: 'f-bass', name: 'Synth Bass', prompt: 'analog synth bass, round low tone, gentle filter' },
+  { id: 'f-organ', name: 'Organ', prompt: 'drawbar electric organ, steady tone' },
+  { id: 'f-trumpet', name: 'Trumpet', prompt: 'muted trumpet, brassy and focused' },
+  { id: 'f-marimba', name: 'Marimba', prompt: 'marimba, deep wooden bar struck with a soft mallet' },
+  { id: 'f-harp', name: 'Harp', prompt: 'concert harp, plucked string ringing' },
 ];
 
 let counter = 0;

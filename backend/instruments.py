@@ -28,18 +28,24 @@ from . import config, render_guide, sa3_backend
 
 log = logging.getLogger(__name__)
 
-# Three samples covering C3-C5, the range most parts are played in.
-#
-# Deliberately few. Every pitch is a generation, and with retries five
-# pitches took the better part of a minute per instrument — long enough
-# that loading one reads as nothing happening at all. Three keeps it to
-# roughly fifteen seconds while still putting a source within about an
-# octave of any note that gets played.
-DEFAULT_PITCHES = (48, 60, 72)  # C3 C4 C5
+# How many takes to sample per instrument. Each is a separate generation,
+# so this is the main cost. Three gives the sampler a few pitches to pick
+# between without making a library load feel like a wait.
+DEFAULT_TAKES = 3
 
-# Long enough to hold a sustained note plus release. Sampler playback
-# truncates to the MIDI note's length anyway.
-SAMPLE_SECONDS = 3.0
+# Appended to every instrument description. Without it the model plays a
+# short musical phrase rather than one note — pitch wandering a whole
+# octave across the take — and a sampler built on that warbles on every
+# note. "Chord" and "ensemble" are the specific enemies: neither has a
+# single pitch to sample.
+SAMPLE_SUFFIX = (
+    "solo instrument alone, one single note held steady, monophonic, "
+    "dry close mic, no reverb, no other instruments, no drums"
+)
+
+# Generate longer than the sample needs, then keep the steadiest stretch.
+TAKE_SECONDS = 6.0
+SEGMENT_SECONDS = 1.6
 
 # High on purpose. The guide is a sawtooth, and at low divergence the model
 # returns that sawtooth with a polish rather than an instrument: measured
@@ -77,6 +83,63 @@ def sample_path(prompt: str, pitch: int):
     return sample_dir(prompt) / f"{pitch}.wav"
 
 
+def steadiest_segment(audio: np.ndarray, want: float) -> np.ndarray:
+    """The most pitch-stable stretch of a generated take.
+
+    Asked for one sustained note, the model tends to play a short phrase
+    instead — pitch wandering several semitones across the take. Sampling
+    that whole thing gives an instrument that warbles on every note. So
+    generate longer than needed and keep only the steadiest window, which
+    is the part that actually behaves like a held note.
+    """
+    import librosa
+
+    hop = 512
+    f0, voiced, _ = librosa.pyin(
+        audio,
+        fmin=float(librosa.note_to_hz("C2")),
+        fmax=float(librosa.note_to_hz("C7")),
+        sr=config.SAMPLE_RATE,
+        hop_length=hop,
+    )
+    midi = librosa.hz_to_midi(f0)
+    frames_wanted = max(4, int(want * config.SAMPLE_RATE / hop))
+    if len(midi) <= frames_wanted:
+        return audio
+
+    # Loudness per frame, so a decaying instrument does not win on
+    # steadiness by being nearly silent. A plucked guitar is the case that
+    # forced this: its quietest tail is also its steadiest stretch, and
+    # picking it produced samples a fraction of the level of every other
+    # instrument in the library.
+    energy = librosa.feature.rms(y=audio, hop_length=hop, frame_length=2048)[0]
+    loudest = float(energy.max()) or 1.0
+
+    best_start, best_score = 0, -np.inf
+    for start in range(0, len(midi) - frames_wanted, 2):
+        window = midi[start : start + frames_wanted]
+        sung = window[np.isfinite(window)]
+        # Require the window to be mostly voiced, or a silent stretch wins
+        # by having no pitch to vary.
+        if len(sung) < frames_wanted * 0.7:
+            continue
+
+        level = float(np.mean(energy[start : start + frames_wanted])) / loudest
+        if level < 0.25:
+            continue  # too quiet to be the body of the note
+
+        spread = float(np.percentile(sung, 90) - np.percentile(sung, 10))
+        # Steadiness matters most, but not to the point of choosing a
+        # whisper over a note.
+        score = -spread + level
+        if score > best_score:
+            best_start, best_score = start, score
+
+    if not np.isfinite(best_score):
+        return audio
+    return audio[best_start * hop : (best_start + frames_wanted) * hop]
+
+
 def _one_note_guide(pitch: int, seconds: float) -> np.ndarray:
     """A single sustained note, rendered with harmonics.
 
@@ -101,66 +164,60 @@ def _one_note_guide(pitch: int, seconds: float) -> np.ndarray:
 
 def generate_samples(
     prompt: str,
-    pitches: tuple[int, ...] = DEFAULT_PITCHES,
-    seconds: float = SAMPLE_SECONDS,
+    takes: int = DEFAULT_TAKES,
     backend: str | None = None,
     seed: int | None = None,
     force: bool = False,
 ) -> list[dict]:
-    """Generate (or reuse) one sustained one-shot per pitch."""
+    """Sample an instrument: a few steady single notes of it.
+
+    Generated from the prompt alone, with no guide track. An earlier
+    version conditioned on a sawtooth to pin the pitch, and every
+    instrument inherited the sawtooth — flute, cello and piano came back
+    correlating 0.96-0.98 with the guide's spectrum and differing from each
+    other by 0.02. The pitch it bought was not worth the instrument it cost.
+
+    Nothing is asked to land on a particular pitch, because nothing needs
+    to: each take's pitch is measured afterwards and the sampler transposes
+    from it. That is also what makes dropping the guide affordable.
+    """
     directory = sample_dir(prompt)
     directory.mkdir(parents=True, exist_ok=True)
 
     out = []
-    for index, pitch in enumerate(pitches):
-        path = sample_path(prompt, pitch)
+    for index in range(takes):
+        path = directory / f"{index}.wav"
 
         if force or not path.exists():
-            guide = _one_note_guide(pitch, seconds)
-            best = None
-
-            for attempt in range(RETRIES + 1):
-                # Seeds vary per pitch and per attempt: one seed across the
-                # set produces samples that share artifacts and sound cloned
-                # rather than like one instrument across its range.
-                offset = index + attempt * 101
-                audio, backend_used = sa3_backend.generate_with_fallback(
-                    backend_id=backend,
-                    prompt=f"{prompt}, single sustained note, one shot, no reverb tail",
-                    init_audio=guide,
-                    noise=SAMPLE_NOISE,
-                    duration=seconds,
-                    seed=(seed + offset) if seed is not None else None,
-                )
-                audio = _trim_and_fade(audio)
-                actual = detect_pitch(audio) or pitch
-                drift = abs(actual - pitch)
-
-                if best is None or drift < best[2]:
-                    best = (audio, actual, drift)
-                if drift <= MAX_DRIFT:
-                    break
-                log.info("pitch %d drifted %+d, retrying", pitch, actual - pitch)
-
-            audio, actual, drift = best
-            # Deliberately NOT retuned. Resampling a sample onto its
-            # intended pitch drags its whole spectrum with it: measured
-            # across four instruments it collapsed three of four centroids
-            # to under 600Hz and cut distinctness from 0.76 to 0.27 — it
-            # gives back exactly the timbre that high divergence bought.
-            # The sampler transposes from the detected pitch instead,
-            # which is what a sampler does anyway.
-            sf.write(path, audio, config.SAMPLE_RATE)
-            log.info(
-                "sampled %s at %d (sounds %d) via %s",
-                instrument_id(prompt), pitch, actual, backend_used,
+            # Seeds vary per take: one seed would give near-identical
+            # samples that sound cloned rather than like one instrument.
+            audio, backend_used = sa3_backend.generate_with_fallback(
+                backend_id=backend,
+                prompt=f"{prompt}, {SAMPLE_SUFFIX}",
+                init_audio=None,
+                noise=0.0,
+                duration=TAKE_SECONDS,
+                seed=(seed + index) if seed is not None else None,
             )
+            audio = _trim_and_fade(steadiest_segment(audio, SEGMENT_SECONDS))
+            sf.write(path, audio, config.SAMPLE_RATE)
+            log.info("sampled %s take %d via %s", instrument_id(prompt), index, backend_used)
 
-        actual = detect_pitch(sf.read(path, dtype="float32")[0])
-        if actual is not None and actual != pitch:
-            log.info("sample for %d actually sounds %d; sampler will compensate", pitch, actual)
+        pitch = detect_pitch(sf.read(path, dtype="float32")[0])
+        # A take with no readable pitch is unusable as a sampler source;
+        # dropping it beats letting the sampler transpose from a guess.
+        if pitch is None:
+            log.info("take %d of %s had no readable pitch; dropped", index, instrument_id(prompt))
+            continue
+        out.append({"index": index, "actual_pitch": pitch, "path": str(path)})
 
-        out.append({"pitch": pitch, "actual_pitch": actual or pitch, "path": str(path)})
+    if not out:
+        # Every take was unusable. Saying so beats returning an empty set,
+        # which loads "successfully" and then plays nothing.
+        raise RuntimeError(
+            "could not sample that instrument - try describing a single "
+            "sustained note, e.g. 'bowed cello, warm and woody'"
+        )
 
     return out
 
@@ -234,4 +291,12 @@ def _trim_and_fade(audio: np.ndarray, threshold: float = 0.02) -> np.ndarray:
     if fade > 0:
         audio = audio.copy()
         audio[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)
+
+    # Level every sample the same. Instruments come back at wildly
+    # different loudnesses - a plucked guitar an eighth the level of a
+    # sustained trumpet - and without this the quiet ones are inaudible
+    # under the rest of the mix however good the sample is.
+    peak = float(np.max(np.abs(audio)))
+    if peak > 1e-4:
+        audio = (audio / peak * 0.9).astype(np.float32)
     return audio

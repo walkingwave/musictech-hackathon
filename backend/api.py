@@ -201,7 +201,7 @@ def interpret_request(request: InterpretRequest) -> dict:
 
 class SamplesRequest(BaseModel):
     prompt: str
-    pitches: list[int] | None = None
+    takes: int | None = None
     backend: str | None = None
     seed: int | None = None
     force: bool = False
@@ -218,11 +218,10 @@ def instrument_samples(request: SamplesRequest) -> dict:
     if not request.prompt.strip():
         raise HTTPException(400, "an instrument needs a description")
 
-    pitches = tuple(request.pitches or instruments.DEFAULT_PITCHES)
     try:
         made = instruments.generate_samples(
             request.prompt,
-            pitches=pitches,
+            takes=max(1, min(6, request.takes or instruments.DEFAULT_TAKES)),
             backend=request.backend,
             seed=request.seed,
             force=request.force,
@@ -233,22 +232,21 @@ def instrument_samples(request: SamplesRequest) -> dict:
     ident = instruments.instrument_id(request.prompt)
     return {
         "instrument_id": ident,
+        # Takes are not asked to hit a pitch; each one lands where it
+        # lands and reports it, and the sampler transposes from there.
         "samples": [
             {
-                "pitch": s["pitch"],
-                # What the sample actually sounds, which is not always what
-                # was asked for. The sampler transposes from this.
                 "actual_pitch": s["actual_pitch"],
-                "url": f"/api/instrument/{ident}/{s['pitch']}.wav",
+                "url": f"/api/instrument/{ident}/{s['index']}.wav",
             }
             for s in made
         ],
     }
 
 
-@app.get("/api/instrument/{ident}/{pitch}.wav")
-def instrument_sample(ident: str, pitch: int) -> FileResponse:
-    path = config.CACHE_DIR / "instruments" / ident / f"{pitch}.wav"
+@app.get("/api/instrument/{ident}/{index}.wav")
+def instrument_sample(ident: str, index: int) -> FileResponse:
+    path = config.CACHE_DIR / "instruments" / ident / f"{index}.wav"
     if not path.is_file():
         raise HTTPException(404, "sample not found")
     return FileResponse(path, media_type="audio/wav")

@@ -42,11 +42,10 @@ export function useSampler() {
 
         const decoded = await Promise.all(
           samples.map(async (s) => ({
-            pitch: s.pitch,
-            // What the sample actually sounds. Transposing from the
-            // requested pitch would be a semitone-perfect way to be wrong
-            // whenever the model drifted an octave.
-            actualPitch: s.actual_pitch ?? s.pitch,
+            // Takes are not generated at a requested pitch — each lands
+            // wherever it lands and reports it, and playback transposes
+            // from there.
+            actualPitch: s.actual_pitch,
             buffer: await context().decodeAudioData(
               await (await fetch(s.url)).arrayBuffer(),
             ),
