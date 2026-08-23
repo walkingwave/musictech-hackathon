@@ -45,6 +45,8 @@ export const updateAnalysis = (sessionId, edit) =>
   });
 
 export const generate = (body) => postJSON('/generate', body);
+export const generateFromHum = (body) => postJSON('/generate-from-hum', body); // legacy
+export const transformHum = (body) => postJSON('/transform-hum', body);
 
 // Start a session with no source audio, for composing from nothing.
 export const createBlankSession = (body) => postJSON('/session/blank', body);

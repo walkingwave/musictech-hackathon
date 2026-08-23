@@ -33,6 +33,17 @@ log = logging.getLogger(__name__)
 GROOVE_NAMES = [g.name for g in grooves.ALL]
 
 
+def hum_target(text: str) -> str:
+    """Resolve the musical role requested for a recorded hum.
+
+    The UI offers an explicit control, but this keeps API clients and prompt-led
+    flows useful: “bassline”, “low end”, and “bass” choose bass; every other
+    request defaults to preserving the hum as a melody.
+    """
+    lowered = text.lower()
+    return "bass" if re.search(r"\bbass(?:line)?\b|\blow end\b|\bsub\b", lowered) else "melody"
+
+
 class TrackSpec(BaseModel):
     part: str = Field(
         description=f"The arranger to use — one of: {', '.join(PARTS)}. This "

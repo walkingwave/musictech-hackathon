@@ -28,12 +28,13 @@ export default function App() {
   const sessionIdRef = useRef(null);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   const [analysis, setAnalysis] = useState(null);
+  const [pitchTracking, setPitchTracking] = useState(null);
   const [fileName, setFileName] = useState(null);
   // A user-chosen session name, editable in the top bar. Falls back to the
   // uploaded filename, then "Untitled". Persisted so a reload keeps it.
   const [projectName, setProjectName] = useState(() => localStorage.getItem('projectName') || '');
   const [prompt, setPrompt] = useState('');
-  const [selected, setSelected] = useState(() => new Set(['bass', 'drums', 'piano', 'harmony']));
+  const [humTarget, setHumTarget] = useState('melody');
   const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
@@ -118,6 +119,7 @@ export default function App() {
     sessionIdRef.current = null;
     setSessionId(null);
     setAnalysis(null);
+    setPitchTracking(null);
     setFileName(null);
     setPrompt('');
     setView('input');
@@ -153,6 +155,7 @@ export default function App() {
       sessionIdRef.current = id;
       setSessionId(id);
       setAnalysis(meta.analysis);
+      setPitchTracking(meta.pitch_tracking || null);
       setStudioBpm(meta.analysis.bpm);
       setStudioKey(meta.analysis.key);
       setStudioMode(meta.analysis.mode);
@@ -170,6 +173,16 @@ export default function App() {
         engine.addTrackWithClip(stem.name, stem.part, buffer, {
           start: 0, part: stem.part, prompt: stem.prompt, seed: stem.seed,
           backendUsed: stem.backend_used, duration: stem.duration || buffer.duration, audioUrl: url,
+        });
+      }
+      for (const [name, transform] of Object.entries(meta.transforms || {})) {
+        const url = `/api/session/${id}/midi/${encodeURIComponent(name)}.mid`;
+        // Transform metadata stores the source MIDI events in beats so this
+        // restores without a browser MIDI parser or an audio backend.
+        engine.addMidiTrack(`${name} MIDI`, null, {
+          start: 0, durationBeats: transform.duration_beats || 4,
+          duration: (transform.duration_beats || 4) * (60 / meta.analysis.bpm),
+          notes: transform.midi_notes || [], midiUrl: url,
         });
       }
       setView('studio');
@@ -281,13 +294,6 @@ export default function App() {
     }
   };
 
-  const toggleStem = (id) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-
   const submitVocal = async (blob, filename) => {
     flash('Analyzing…');
     try {
@@ -296,6 +302,7 @@ export default function App() {
       const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
+      setPitchTracking(result.pitch_tracking || null);
       setStudioBpm(result.analysis.bpm);
       setStudioKey(result.analysis.key);
       setStudioMode(result.analysis.mode);
@@ -397,29 +404,25 @@ export default function App() {
     vocalAddedRef.current = true;
   }, [engine]);
 
-  const generate = async (analysisEdit) => {
+  const generate = async (analysisEdit, transformOptions = {}) => {
     setGenerating(true);
     try {
       await apiClient.updateAnalysis(sessionId, analysisEdit);
-      await ensureVocalTrack();
-      // Sequential — the local model is single-instance, parallel calls
-      // would just contend for it.
-      for (const part of selected) {
-        const result = await generateStem({ part, style: prompt, bars });
-        const buffer = await engine
-          .context()
-          .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
-        engine.addTrackWithClip(PART_LABEL[part] || part, part, buffer, {
-          start: 0,
-          part,
-          prompt,
-          seed: result.seed,
-          backendUsed: result.backend_used,
-          duration: result.duration || buffer.duration,
-          startBar: 0,
-          audioUrl: result.audio_url,
-        });
-      }
+      const result = await apiClient.transformHum({
+        session_id: sessionId,
+        target: humTarget,
+        ...transformOptions,
+      });
+      const label = humTarget === 'bass' ? 'Hum Bassline' : 'Hum Melody';
+      const beats = Math.max(4, ...((result.midi_notes || []).map((note) => note.start + note.length)));
+      engine.addMidiTrack(`${label} MIDI`, null, {
+        start: 0,
+        duration: beats * (60 / studioBpm),
+        durationBeats: beats,
+        notes: result.midi_notes || [],
+        midiUrl: result.midi_url,
+      });
+      flash('MIDI is ready — edit notes in the piano roll or download the .mid file.');
       setView('studio');
     } catch (error) {
       if (isLostSession(error)) resetSession();
@@ -623,14 +626,15 @@ export default function App() {
       ) : view === 'input' ? (
         <InputView
           analysis={analysis}
+          pitchTracking={pitchTracking}
           fileName={fileName}
           backends={backends}
           backend={backend}
           onBackend={selectBackend}
           prompt={prompt}
           onPrompt={setPrompt}
-          selected={selected}
-          onToggleStem={toggleStem}
+          target={humTarget}
+          onTarget={setHumTarget}
           bars={bars}
           onBars={setBars}
           onSubmitVocal={submitVocal}

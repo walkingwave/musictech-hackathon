@@ -1,0 +1,18 @@
+{
+  "tracks": [
+    {
+      "part": "bass",
+      "name": "Upright Bass",
+      "instrument": "upright bass",
+      "style": ""
+    }
+  ],
+  "style": "",
+  "groove": "straight",
+  "bpm": 92,
+  "key": "D",
+  "mode": "minor",
+  "bars": 8,
+  "notes": "Using straight groove by default.",
+  "interpreter": "deepseek"
+}

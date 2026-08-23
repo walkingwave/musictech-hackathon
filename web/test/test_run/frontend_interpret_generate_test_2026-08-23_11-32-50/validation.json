@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "passed": true,
+  "backend": "mock",
+  "interpreter": "deepseek",
+  "checks": [
+    {
+      "name": "interpretation contract",
+      "passed": true,
+      "failures": []
+    },
+    {
+      "name": "generation contract",
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "audio": {
+    "contentType": "audio/wav",
+    "bytes": 1703980
+  }
+}

@@ -20,10 +20,11 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import soundfile as sf
+import pretty_midi
 
-from . import compose, config, instruments, interpret, pipeline, sa3_backend
+from . import compose, config, hum_transform, instruments, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -79,6 +80,35 @@ class GenerateRequest(BaseModel):
 
 
 
+class HumGenerateRequest(BaseModel):
+    session_id: str
+    target: str | None = None  # melody | bass; inferred from prompt when omitted
+    prompt: str = ""
+    noise: float | None = None
+    backend: str | None = None
+    seed: int | None = None
+    name: str | None = None
+    faithful: bool = True
+    snap_to_key: bool = False
+    quantize: bool = False
+    quantize_division: int = 8
+    render_audio: bool = True
+
+
+class TransformHumRequest(BaseModel):
+    """Deterministic hum-to-MIDI request; deliberately has no SA3 fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    target: str  # melody | bass
+    name: str | None = None
+    faithful: bool = True
+    snap_to_key: bool = False
+    quantize: bool = False
+    quantize_division: int = Field(default=8, ge=1, le=32)
+
+
 class AnalysisEdit(BaseModel):
     """User corrections to the detected structure. Every field optional.
 
@@ -118,7 +148,48 @@ async def analyze(file: UploadFile) -> dict:
     finally:
         upload_path.unlink(missing_ok=True)
 
-    return {"session_id": session.id, "analysis": analysis.to_dict()}
+    return {
+        "session_id": session.id,
+        "analysis": analysis.to_dict(),
+        "pitch_tracking": session.to_dict().get("pitch_tracking", {}),
+    }
+
+
+@app.post("/api/transform-hum")
+def transform_hum(request: TransformHumRequest) -> dict:
+    """Turn a saved hum into editable MIDI without invoking any audio backend."""
+    if request.target not in ("melody", "bass"):
+        raise HTTPException(400, "target must be 'melody' or 'bass'")
+    session = _load(request.session_id)
+    name = pipeline.track_name(session, request.target, request.name)
+    options = hum_transform.TransformOptions(
+        faithful=request.faithful, snap_to_key=request.snap_to_key,
+        quantize=request.quantize, quantize_division=request.quantize_division,
+    )
+    try:
+        with _generation_for(session.id):
+            result = pipeline.transform_hum_to_midi(session, request.target, name, options)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {
+        "session_id": session.id, **result,
+        "midi_url": f"/api/session/{session.id}/midi/{result['name']}.mid",
+        "pitch_tracking": session.to_dict().get("pitch_tracking", {}).get("tracker_id", "unknown"),
+    }
+
+
+@app.post("/api/generate-from-hum")
+def generate_from_hum(request: HumGenerateRequest) -> dict:
+    """Deprecated compatibility route; hum transformation is now MIDI-only."""
+    target = request.target or interpret.hum_target(request.prompt)
+    return {
+        **transform_hum(TransformHumRequest(
+            session_id=request.session_id, target=target, name=request.name,
+            faithful=request.faithful, snap_to_key=request.snap_to_key,
+            quantize=request.quantize, quantize_division=request.quantize_division,
+        )),
+        "deprecated": "use /api/transform-hum; no Stable Audio render was requested",
+    }
 
 
 
@@ -577,6 +648,16 @@ async def generate_from_reference(
     }
 
 
+def _hum_midi_notes(session: Session, name: str) -> list[dict]:
+    midi = pretty_midi.PrettyMIDI(str(session.midi_path(name)))
+    beat = session.analysis.seconds_per_beat
+    return [
+        {"pitch": note.pitch, "start": note.start / beat, "length": (note.end - note.start) / beat,
+         "velocity": note.velocity}
+        for instrument in midi.instruments for note in instrument.notes
+    ]
+
+
 def _safe_name(name: str) -> str:
     """Filesystem-safe stem name. These become paths, so no traversal."""
     cleaned = "".join(c for c in name if c.isalnum() or c in "-_") or "clip"
@@ -631,6 +712,17 @@ def get_audio(session_id: str, kind: str, filename: str) -> FileResponse:
         raise HTTPException(404, "not found")
 
     return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/session/{session_id}/midi/{filename}")
+def get_midi(session_id: str, filename: str) -> FileResponse:
+    if Path(filename).name != filename or not filename.endswith(".mid"):
+        raise HTTPException(404, "not found")
+    session = _load(session_id)
+    path = session.root / "midi" / filename
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="audio/midi")
 
 
 @app.get("/api/session/{session_id}/vocal.wav")

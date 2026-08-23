@@ -38,6 +38,9 @@ _load_dotenv()
 # Stable Audio 3 works at 44.1kHz stereo. We keep everything at this rate
 # so no stage of the pipeline has to resample.
 SAMPLE_RATE = 44100
+# auto uses Basic Pitch only when explicitly installed/configured; pYIN remains
+# the dependency-free fallback for offline and lightweight setups.
+PITCH_TRACKER = os.getenv("BTG_PITCH_TRACKER", "pyin").lower()
 
 # --- generation defaults -----------------------------------------------
 
