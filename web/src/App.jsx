@@ -20,10 +20,21 @@ export default function App() {
     return stored && stored !== 'mock' ? stored : 'local';
   });
   const [sessionId, setSessionId] = useState(null);
+  // Mirror of sessionId that async flows can trust. State reads inside a
+  // long-running handler are frozen at render time, so "apply settings"
+  // creating a session and the generate right after it each saw null and
+  // each created their own — every prompt run leaked a blank "Untitled"
+  // session into the Projects list.
+  const sessionIdRef = useRef(null);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   const [analysis, setAnalysis] = useState(null);
+  const [pitchTracking, setPitchTracking] = useState(null);
   const [fileName, setFileName] = useState(null);
+  // A user-chosen session name, editable in the top bar. Falls back to the
+  // uploaded filename, then "Untitled". Persisted so a reload keeps it.
+  const [projectName, setProjectName] = useState(() => localStorage.getItem('projectName') || '');
   const [prompt, setPrompt] = useState('');
-  const [selected, setSelected] = useState(() => new Set(['bass', 'drums', 'piano', 'harmony']));
+  const [humTarget, setHumTarget] = useState('melody');
   const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
@@ -83,18 +94,57 @@ export default function App() {
     return list;
   }, []);
 
-  const closeProject = useCallback(() => {
+  // The server quietly falls back to a working backend when the chosen one
+  // can't run (e.g. `local` picked but Hugging Face access not granted yet).
+  // Silent fallback looks like "the model sounds wrong" — so say what ran and,
+  // when the server told us, the actual error (HTTP status included).
+  const warnOnFallback = useCallback(
+    (result) => {
+      const used = result?.backend_used;
+      if (used && backend && used !== backend) {
+        const why = result?.fallback_error;
+        flash(why
+          ? `${why} — generated with "${used}" instead`
+          : `"${backend}" couldn't run — generated with "${used}" instead`);
+      }
+    },
+    [backend, flash],
+  );
+
+  // Wipe the editor back to an empty project. Server-side files are kept —
+  // both "close" and "new" are local operations; only Delete touches the disk.
+  const clearProject = useCallback(() => {
     engine.clear();
     project.clear();
+    sessionIdRef.current = null;
     setSessionId(null);
     setAnalysis(null);
+    setPitchTracking(null);
     setFileName(null);
     setPrompt('');
     setView('input');
+    setSessionPickerOpen(false);
+    // The name and the musical settings belong to the project being closed.
+    // Leaving them meant a "new" project opened already named after the old
+    // one and pinned to its tempo and key.
+    setProjectName('');
+    localStorage.removeItem('projectName');
+    setStudioBpm(120);
+    setStudioKey('C');
+    setStudioMode('major');
     vocalWavRef.current = null;
     vocalAddedRef.current = false;
+  }, [engine, project]);
+
+  const closeProject = useCallback(() => {
+    clearProject();
     flash('Project closed — server files were kept');
-  }, [engine, project, flash]);
+  }, [clearProject, flash]);
+
+  const newProject = useCallback(() => {
+    clearProject();
+    flash('New project — record or upload to start');
+  }, [clearProject, flash]);
 
   const loadProject = useCallback(async (id) => {
     try {
@@ -102,12 +152,17 @@ export default function App() {
       if (!meta.analysis) throw new Error('session has not been analyzed yet');
       engine.clear();
       project.clear();
+      sessionIdRef.current = id;
       setSessionId(id);
       setAnalysis(meta.analysis);
+      setPitchTracking(meta.pitch_tracking || null);
       setStudioBpm(meta.analysis.bpm);
       setStudioKey(meta.analysis.key);
       setStudioMode(meta.analysis.mode);
       setFileName(meta.display_name || `Session ${id}`);
+      // The loaded project's own name, not whatever the last one was called.
+      setProjectName('');
+      localStorage.removeItem('projectName');
       vocalWavRef.current = null;
       vocalAddedRef.current = false;
       for (const stem of Object.values(meta.stems || {})) {
@@ -120,6 +175,16 @@ export default function App() {
           backendUsed: stem.backend_used, duration: stem.duration || buffer.duration, audioUrl: url,
         });
       }
+      for (const [name, transform] of Object.entries(meta.transforms || {})) {
+        const url = `/api/session/${id}/midi/${encodeURIComponent(name)}.mid`;
+        // Transform metadata stores the source MIDI events in beats so this
+        // restores without a browser MIDI parser or an audio backend.
+        engine.addMidiTrack(`${name} MIDI`, null, {
+          start: 0, durationBeats: transform.duration_beats || 4,
+          duration: (transform.duration_beats || 4) * (60 / meta.analysis.bpm),
+          notes: transform.midi_notes || [], midiUrl: url,
+        });
+      }
       setView('studio');
       setSessionPickerOpen(false);
       flash('Project loaded');
@@ -128,17 +193,24 @@ export default function App() {
     }
   }, [engine, project, flash]);
 
-  const deleteCurrentProject = useCallback(async () => {
-    if (!sessionId || !window.confirm(`Delete ${fileName || `session ${sessionId}`} permanently?`)) return;
+  // Deleting the project you have open also has to clear it out of the editor;
+  // deleting some other project from the picker must leave the open one alone.
+  const deleteProject = useCallback(async (id, name) => {
+    if (!id || !window.confirm(`Delete ${name || `session ${id}`} permanently?`)) return;
     try {
-      await apiClient.deleteSession(sessionId);
-      closeProject();
+      await apiClient.deleteSession(id);
+      if (id === sessionId) closeProject();
       await refreshSessions();
       flash('Project deleted');
     } catch (error) {
       flash(`Could not delete project — ${error.message}`);
     }
-  }, [sessionId, fileName, closeProject, refreshSessions, flash]);
+  }, [sessionId, closeProject, refreshSessions, flash]);
+
+  const deleteCurrentProject = useCallback(
+    () => deleteProject(sessionId, fileName),
+    [deleteProject, sessionId, fileName],
+  );
 
   const openSessionPicker = useCallback(async () => {
     try {
@@ -151,6 +223,7 @@ export default function App() {
 
   const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
+    sessionIdRef.current = null;
     setSessionId(null);
     setAnalysis(null);
     setFileName(null);
@@ -178,12 +251,48 @@ export default function App() {
     localStorage.setItem('backend', id);
   };
 
-  const toggleStem = (id) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+  const displayName = projectName || fileName || 'Untitled';
+
+  // Rename locally at every keystroke, and push to the server debounced so
+  // the Projects list shows the same name as the header. Without the push,
+  // the two drifted apart permanently — the list is built server-side.
+  const renameTimerRef = useRef(null);
+  const renameSession = (name) => {
+    setProjectName(name);
+    localStorage.setItem('projectName', name);
+    if (!sessionId) return;
+    clearTimeout(renameTimerRef.current);
+    renameTimerRef.current = setTimeout(() => {
+      apiClient.renameSession(sessionId, name).catch(() => {});
+    }, 500);
+  };
+
+  // The whole project as a zip: every stem, its MIDI, the vocal and a
+  // provenance manifest — the deliverable a musician drops into a DAW.
+  const exportProject = () => {
+    if (!sessionId) return flash('Nothing to export yet — generate something first');
+    const a = document.createElement('a');
+    a.href = apiClient.exportUrl(sessionId);
+    a.download = `${displayName.replace(/[^\w-]+/g, '_') || 'project'}.zip`;
+    a.click();
+  };
+
+  // Share the export link. Uses the native share sheet when the browser has
+  // one (mobile, some desktops), else copies the link to the clipboard.
+  const shareProject = async () => {
+    if (!sessionId) return flash('Nothing to share yet — generate something first');
+    const url = new URL(apiClient.exportUrl(sessionId), window.location.origin).href;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: displayName, url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      flash('Project export link copied to clipboard');
+    } catch {
+      /* user dismissed the share sheet — nothing to do */
+    }
+  };
 
   const submitVocal = async (blob, filename) => {
     flash('Analyzing…');
@@ -193,6 +302,7 @@ export default function App() {
       const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
+      setPitchTracking(result.pitch_tracking || null);
       setStudioBpm(result.analysis.bpm);
       setStudioKey(result.analysis.key);
       setStudioMode(result.analysis.mode);
@@ -211,17 +321,20 @@ export default function App() {
   // Composing without a recording still needs a session, since every stage
   // keys off an Analysis. Make a blank one on first use.
   const ensureSession = useCallback(async () => {
-    if (sessionId) return sessionId;
+    // The ref, not the state: this runs mid-flow, after applyMusicalSettings
+    // may have created the session in the same handler.
+    if (sessionIdRef.current) return sessionIdRef.current;
     const result = await apiClient.createBlankSession({
       bpm: studioBpm,
       key: studioKey,
       mode: studioMode,
       bars,
     });
+    sessionIdRef.current = result.session_id;
     setSessionId(result.session_id);
     setAnalysis(result.analysis);
     return result.session_id;
-  }, [sessionId, studioBpm, studioKey, studioMode, bars]);
+  }, [studioBpm, studioKey, studioMode, bars]);
 
   const generateStem = useCallback(
     async (opts) => {
@@ -235,14 +348,55 @@ export default function App() {
         start_bar: opts.start_bar,
         name: opts.name,
         instrument: opts.instrument,
+        production: opts.production,
+        ensemble: opts.ensemble,
+        voice_index: opts.voice_index,
+        voice_count: opts.voice_count,
         backend,
         seed: opts.seed,
       });
+      warnOnFallback(result);
       return result;
     },
-    [sessionId, prompt, backend, ensureSession],
+    [sessionId, prompt, backend, ensureSession, warnOnFallback],
   );
 
+
+  // Master-first song generation: one call renders the whole band, the
+  // stems come back carved out of that master. Used by the prompt bar for
+  // multi-track plans so the parts are one performance split apart.
+  const generateSongStems = useCallback(
+    async ({ tracks, style, production, bars: songBars, onProgress }) => {
+      const id = await ensureSession();
+      // The song pipeline runs minutes inside one request; poll its live
+      // stage so the wait reads as progress rather than a hang.
+      const poll = onProgress
+        ? setInterval(async () => {
+            try {
+              const { status } = await apiClient.sessionProgress(id);
+              if (status) onProgress(status);
+            } catch {
+              /* polling is best-effort */
+            }
+          }, 2000)
+        : null;
+      try {
+        const result = await apiClient.generateSong({
+          session_id: id,
+          tracks,
+          style,
+          production,
+          bars: songBars,
+          backend,
+        });
+        (result.stems || []).forEach(warnOnFallback);
+        return result.stems || [];
+      } finally {
+        if (poll) clearInterval(poll);
+      }
+    },
+    [backend, ensureSession, warnOnFallback],
+  );
   const ensureVocalTrack = useCallback(async () => {
     if (vocalAddedRef.current || !vocalWavRef.current) return;
     const buffer = await engine.context().decodeAudioData(await vocalWavRef.current.arrayBuffer());
@@ -250,29 +404,25 @@ export default function App() {
     vocalAddedRef.current = true;
   }, [engine]);
 
-  const generate = async (analysisEdit) => {
+  const generate = async (analysisEdit, transformOptions = {}) => {
     setGenerating(true);
     try {
       await apiClient.updateAnalysis(sessionId, analysisEdit);
-      await ensureVocalTrack();
-      // Sequential — the local model is single-instance, parallel calls
-      // would just contend for it.
-      for (const part of selected) {
-        const result = await generateStem({ part, style: prompt, bars });
-        const buffer = await engine
-          .context()
-          .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
-        engine.addTrackWithClip(PART_LABEL[part] || part, part, buffer, {
-          start: 0,
-          part,
-          prompt,
-          seed: result.seed,
-          backendUsed: result.backend_used,
-          duration: result.duration || buffer.duration,
-          startBar: 0,
-          audioUrl: result.audio_url,
-        });
-      }
+      const result = await apiClient.transformHum({
+        session_id: sessionId,
+        target: humTarget,
+        ...transformOptions,
+      });
+      const label = humTarget === 'bass' ? 'Hum Bassline' : 'Hum Melody';
+      const beats = Math.max(4, ...((result.midi_notes || []).map((note) => note.start + note.length)));
+      engine.addMidiTrack(`${label} MIDI`, null, {
+        start: 0,
+        duration: beats * (60 / studioBpm),
+        durationBeats: beats,
+        notes: result.midi_notes || [],
+        midiUrl: result.midi_url,
+      });
+      flash('MIDI is ready — edit notes in the piano roll or download the .mid file.');
       setView('studio');
     } catch (error) {
       if (isLostSession(error)) resetSession();
@@ -322,9 +472,10 @@ export default function App() {
         mode: studioMode,
       });
       if (!sessionId) setSessionId(result.session_id);
+      warnOnFallback(result);
       return result;
     },
-    [sessionId, backend, studioBpm, studioKey, studioMode],
+    [sessionId, backend, studioBpm, studioKey, studioMode, warnOnFallback],
   );
 
   // Adding an instrument to the library also gives you somewhere to play
@@ -350,6 +501,87 @@ export default function App() {
     [engine, library, studioBpm, sampler, backend, flash],
   );
 
+  // The agent answers with tempo, key and mode as part of the brief ("a slow
+  // sad song" is not 120 BPM in C major). Applying them has to be BOTH: the
+  // Studio boxes so the user sees what changed, and the session's analysis so
+  // the guide tracks and prompts of everything generated afterwards use them.
+  // Setting only the local state left the fields showing one tempo while the
+  // backend kept generating at another.
+  const applyMusicalSettings = useCallback(
+    async ({ bpm, key, mode }) => {
+      if (bpm) setStudioBpm(bpm);
+      if (key) setStudioKey(key);
+      if (mode) setStudioMode(mode);
+      if (!bpm && !key && !mode) return;
+      try {
+        const current = sessionIdRef.current;
+        if (current) {
+          const updated = await apiClient.updateAnalysis(current, {
+            bpm: bpm ?? null,
+            key: key ?? null,
+            mode: mode ?? null,
+          });
+          setAnalysis(updated);
+          return;
+        }
+        // No session yet: create it AT these settings. Leaving it to the first
+        // generate meant the session was created from the state this call had
+        // only just asked React to update, so a "slow sad ballad" was
+        // generated at whatever the boxes said before — 120 BPM, C major —
+        // and the corrected values only landed on the next request.
+        const result = await apiClient.createBlankSession({
+          bpm: bpm ?? studioBpm,
+          key: key ?? studioKey,
+          mode: mode ?? studioMode,
+          bars,
+        });
+        sessionIdRef.current = result.session_id;
+        setSessionId(result.session_id);
+        setAnalysis(result.analysis);
+      } catch (error) {
+        flash(`Tempo and key were not saved — ${error.message}`);
+      }
+    },
+    [studioBpm, studioKey, studioMode, bars, flash],
+  );
+
+  // Words -> notes. The agent writes a phrase, it lands on a MIDI track with
+  // a matching instrument already in the slot, and it stays editable in the
+  // piano roll — the point of MIDI over a rendered stem.
+  const composeMidiTrack = useCallback(
+    async ({ text, bars, style }) => {
+      const phrase = await apiClient.composeMidi({
+        text,
+        session_id: sessionId,
+        bars,
+        // The Studio's boxes are more current than whatever was detected from
+        // the original vocal, so they win over the session's own analysis.
+        bpm: studioBpm,
+        key: studioKey,
+        mode: studioMode,
+        style,
+      });
+      const instrument = library.create({
+        name: phrase.name,
+        prompt: phrase.instrument,
+      });
+      const beats = Math.max(1, (phrase.bars || 4) * 4);
+      const secondsPerBeat = 60 / (studioBpm || 100);
+      engine.addMidiTrack(phrase.name, instrument, {
+        start: 0,
+        duration: beats * secondsPerBeat,
+        durationBeats: beats,
+        notes: phrase.notes,
+      });
+      // Fetch the sound straight away, or the notes arrive visible but silent.
+      sampler
+        .load(instrument, { backend })
+        .catch((error) => flash(`Could not load ${instrument.name} — ${error.message}`));
+      return phrase;
+    },
+    [sessionId, studioBpm, studioKey, studioMode, library, engine, sampler, backend, flash],
+  );
+
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
   const studioGenerate = useCallback(
     async (opts) => {
@@ -368,11 +600,16 @@ export default function App() {
       <Header
         view={view}
         onView={setView}
-        sessionName={fileName || 'Untitled'}
+        sessionName={displayName}
+        onRenameSession={renameSession}
         tracksReady={engine.tracks.length > 0}
+        canExport={!!sessionId}
+        onExportProject={exportProject}
+        onShareProject={shareProject}
         backends={backends}
         backend={backend}
         onBackend={selectBackend}
+        onNewProject={newProject}
         onOpenSession={openSessionPicker}
         onCloseSession={closeProject}
         onDeleteSession={deleteCurrentProject}
@@ -389,14 +626,15 @@ export default function App() {
       ) : view === 'input' ? (
         <InputView
           analysis={analysis}
+          pitchTracking={pitchTracking}
           fileName={fileName}
           backends={backends}
           backend={backend}
           onBackend={selectBackend}
           prompt={prompt}
           onPrompt={setPrompt}
-          selected={selected}
-          onToggleStem={toggleStem}
+          target={humTarget}
+          onTarget={setHumTarget}
           bars={bars}
           onBars={setBars}
           onSubmitVocal={submitVocal}
@@ -415,6 +653,9 @@ export default function App() {
           onMode={setStudioMode}
           onBars={setBars}
           onGenerateStem={studioGenerate}
+          onGenerateSong={generateSongStems}
+          onComposeMidi={composeMidiTrack}
+          onApplySettings={applyMusicalSettings}
           onGenerateFromReference={studioGenerateFromReference}
           onRenderMidi={renderMidi}
           sessionId={sessionId}
@@ -427,11 +668,21 @@ export default function App() {
       {sessionPickerOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="session-picker" role="dialog" aria-modal="true" aria-label="Open project">
-            <div className="row"><h2>Open project</h2><button onClick={() => setSessionPickerOpen(false)}>Close</button></div>
+            <div className="row"><h2>Projects</h2><button onClick={() => setSessionPickerOpen(false)}>Close</button></div>
             {!sessions.length ? <p>No saved projects.</p> : sessions.map((item) => (
-              <button className="session-row" key={item.id} onClick={() => loadProject(item.id)}>
-                <strong>{item.display_name}</strong><span>{item.analysis ? `${Math.round(item.analysis.bpm)} BPM · ${item.analysis.key} ${item.analysis.mode}` : 'Unanalyzed'} · {item.track_names.length} tracks</span>
-              </button>
+              <div className="session-entry" key={item.id}>
+                <button className="session-row" onClick={() => loadProject(item.id)}>
+                  <strong>{item.display_name}</strong><span>{item.analysis ? `${Math.round(item.analysis.bpm)} BPM · ${item.analysis.key} ${item.analysis.mode}` : 'Unanalyzed'} · {item.track_names.length} tracks</span>
+                </button>
+                <button
+                  className="session-del"
+                  title={`Delete ${item.display_name}`}
+                  aria-label={`Delete ${item.display_name}`}
+                  onClick={() => deleteProject(item.id, item.display_name)}
+                >
+                  Delete
+                </button>
+              </div>
             ))}
           </section>
         </div>

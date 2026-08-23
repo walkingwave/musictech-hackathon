@@ -15,6 +15,7 @@ dependencies = [
     "librosa>=0.10.2",
     "pretty_midi>=0.2.10",
     "pyrubberband>=0.3.0",
+    "demucs>=4.0.1",
 ]
 
 [project.optional-dependencies]
@@ -25,11 +26,14 @@ local = [
     "torch>=2.4",
     "torchaudio>=2.4",
 ]
+# Optional, lazy-loaded audio-to-MIDI tracker. The app falls back to pYIN.
+pitch-basic = ["basic-pitch>=0.4"]
 
 [project.scripts]
 btg = "backend.cli:main"
 analysis-test = "backend.test.analysis_test_cli:main"
 deepseek-test = "backend.test.deepseek_test_cli:main"
+pitch-midi-eval = "backend.pitch_midi_eval:main"
 
 [build-system]
 requires = ["hatchling"]

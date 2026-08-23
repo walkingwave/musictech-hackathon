@@ -6,7 +6,7 @@ import StudioRecorder from './StudioRecorder.jsx';
 import * as apiClient from '../api.js';
 
 // Timeline studio (light, on-brand) with the controls a basic DAW needs:
-// grid, zoom, adjustable snap (incl. off-grid), a move / split / range tool,
+// grid, zoom, adjustable snap (incl. off-grid), Ableton-style clip gestures,
 // clip trim + split + duplicate, section highlight, loop, keyboard shortcuts.
 
 const LANE_H = 76;
@@ -20,6 +20,11 @@ const KIND_COLOR = {
   drums: '#e8dcb4',
   piano: '#c4dcc0',
   harmony: '#d7c6df',
+  melody: '#e3c9a8',
+  guitar: '#bfd9d2',
+  // A mix is the whole band, so it gets its own colour rather than the
+  // generic audio grey — it is the one track that is the song.
+  mix: '#d9c2c2',
   audio: '#c4d4d6',
 };
 const colorFor = (kind) => KIND_COLOR[kind] || KIND_COLOR.audio;
@@ -40,8 +45,8 @@ const SNAPS = [
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 export default function Studio({
-  engine, bpm, keyName, mode, onBpm, onKey, onMode, onBars, detected,
-  onGenerateStem, onGenerateFromReference, onRenderMidi, sessionId,
+  engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
+  onGenerateStem, onGenerateSong, onComposeMidi, onApplySettings, onGenerateFromReference, onRenderMidi, sessionId,
   instruments = [], onCreateInstrument, sampler, backend,
 }) {
   const {
@@ -80,7 +85,6 @@ export default function Studio({
 
   const secondsPerBar = (60 / (bpm || 120)) * 4;
   const [pps, setPps] = useState(34);
-  const [tool, setTool] = useState('move');
   const [snapId, setSnapId] = useState('bar');
   const [selected, setSelected] = useState(null);
   const [region, setRegion] = useState(null); // {clipId, a, b}
@@ -100,6 +104,10 @@ export default function Studio({
 
   const selTrack = selected ? tracks.find((t) => t.id === selected.trackId) : null;
   const selClip = selTrack?.clips.find((c) => c.id === selected.clipId) || null;
+  // The piano roll owns the keyboard while it is open. Both it and the
+  // timeline listen for Space on the window, so without this a single press
+  // started the transport and the roll at once and everything played twice.
+  const midiEditorOpen = !!(selClip && selTrack && selTrack.kind === 'midi');
 
   // --- keyboard shortcuts ------------------------------------------------
   useEffect(() => {
@@ -122,6 +130,9 @@ export default function Studio({
       if (e.metaKey || e.ctrlKey) return;
 
       if (e.code === 'Space') {
+        // The piano roll handles its own Space; letting this one through too
+        // played the clip and the whole timeline at the same time.
+        if (midiEditorOpen) return;
         e.preventDefault();
         playing ? pause() : play();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -140,13 +151,12 @@ export default function Studio({
         zoom(1);
       } else if (e.key === '-' || e.key === '_') {
         zoom(-1);
-      } else if (e.key === '1') setTool('move');
-      else if (e.key === '2') setTool('range');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [
-    playing, pause, play, selClip, selTrack,
+    playing, pause, play, selClip, selTrack, midiEditorOpen,
     removeClip, splitClip, duplicateClip, position, undo, redo,
   ]);
 
@@ -313,13 +323,13 @@ export default function Studio({
   };
 
   // Agentic bar: interpret the request, then generate each part in turn.
-  const runRequest = async (text) => {
+  const runRequest = async (text, mode = 'stems') => {
     setBusy(true);
     setStatus('Interpreting…');
 
     let plan;
     try {
-      plan = await apiClient.interpret(text, sessionId);
+      plan = await apiClient.interpret(text, sessionId, mode);
     } catch (e) {
       setStatus(`Could not interpret — ${e.message}`);
       setBusy(false);
@@ -332,41 +342,67 @@ export default function Studio({
       return;
     }
 
-    // Apply requested musical settings before generating so the server rebuilds
-    // its guide grid with the same tempo and key as the plan.
-    const analysisEdit = Object.fromEntries(
-      Object.entries({ bpm: plan.bpm, key: plan.key, mode: plan.mode })
-        .filter(([, value]) => value != null),
+    // Tempo, key and mode are part of the request too — explicitly ("90 BPM in
+    // D minor") or through mood alone ("something slow and sad"). They are
+    // applied before generating, and saved to the session, or the guide tracks
+    // are built on the old grid and every stem lands in the wrong key.
+    if (plan.bpm || plan.key || plan.mode) {
+      setStatus('Setting tempo and key…');
+      await onApplySettings({ bpm: plan.bpm, key: plan.key, mode: plan.mode });
+    }
+
+    // Who trades with whom. The backend arranges each part around the others
+    // — leads take turns, comping parts lay out — but only if it knows which
+    // of several same-role tracks this one is. Roles have to match the
+    // backend's ROLES table.
+    const ROLE = {
+      drums: 'rhythm', bass: 'rhythm', mix: 'rhythm',
+      piano: 'comp', guitar: 'comp', harmony: 'comp',
+      melody: 'lead', free: 'lead',
+    };
+    // Generate the rhythm section first, then comping, then leads. Each part
+    // is generated against the stems already made, so the order decides what
+    // the context IS: a lead cut against drums and bass locks to a groove,
+    // a lead cut first is cut against nothing and everything after has to
+    // live with whatever feel it invented.
+    const ROLE_ORDER = { rhythm: 0, comp: 1, lead: 2 };
+    plan.tracks.sort(
+      (a, b) => (ROLE_ORDER[ROLE[a.part]] ?? 2) - (ROLE_ORDER[ROLE[b.part]] ?? 2),
     );
-    const requestedBars = plan.bars ?? undefined;
+    const roleCounts = {};
+    const voices = plan.tracks.map((spec) => {
+      const role = ROLE[spec.part] || 'lead';
+      const index = roleCounts[role] || 0;
+      roleCounts[role] = index + 1;
+      return { role, index };
+    });
+    const roleTotals = roleCounts;
+
+    // Nothing to cohere with when the user asked for a single track: the
+    // ensemble bed exists to make parts of one arrangement sit together,
+    // and mixing whatever is already in the session under a standalone
+    // request is how a drum track came back with someone else's guitar
+    // bleeding through it.
+    const ensemble = plan.tracks.length > 1 ? undefined : false;
 
     try {
-      if (sessionId && Object.keys(analysisEdit).length > 0) {
-        await apiClient.updateAnalysis(sessionId, analysisEdit);
-      }
-      if (plan.bpm != null) onBpm(plan.bpm);
-      if (plan.key != null) onKey(plan.key);
-      if (plan.mode != null) onMode(plan.mode);
-      if (requestedBars != null) onBars?.(requestedBars);
+      // MIDI specs are written note by note; audio specs are generated.
+      const midiSpecs = plan.tracks.filter((s) => s.midi);
+      const audioSpecs = plan.tracks.filter((s) => !s.midi);
 
-      for (const [i, spec] of plan.tracks.entries()) {
-        const part = spec.part;
-        const label = spec.name || part;
-        // Send the style only when this request actually carries one. Sending
-        // an empty string would re-pin the arrangement to "no style" and
-        // reset the groove for every part added afterwards.
-        const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
-        setStatus(`Generating ${label} (${i + 1}/${plan.tracks.length})…`);
-        // Sequential on purpose: the local model is a single instance, so
-        // parallel requests would only contend for it.
-        const result = await onGenerateStem({
-          part,
-          style,
-          name: spec.name,
-          instrument: spec.instrument,
-          bars: requestedBars,
-          seed: Math.floor(Math.random() * 1e9),
+      for (const [i, spec] of midiSpecs.entries()) {
+        const label = spec.name || spec.part;
+        setStatus(`Writing ${label} (${i + 1}/${midiSpecs.length})…`);
+        await onComposeMidi({
+          text: [spec.name, spec.instrument, spec.style, plan.style]
+            .filter(Boolean)
+            .join(', '),
+          bars: plan.bars || undefined,
+          style: [plan.style, spec.style].filter(Boolean).join(', ') || undefined,
         });
+      }
+
+      const addStem = async (result, part, label, style) => {
         const buffer = await decodeResult(result);
         addTrackWithClip(label[0].toUpperCase() + label.slice(1), part, buffer, {
           audioUrl: result.audio_url,
@@ -377,6 +413,49 @@ export default function Studio({
           backendUsed: result.backend_used,
           duration: result.duration || buffer.duration,
         });
+      };
+
+      if (audioSpecs.length > 1) {
+        // Master-first: the whole band is rendered as ONE record, then each
+        // stem is carved out of that master. Generating the parts as separate
+        // model calls — however much shared text and context they got — gave
+        // N performances that merely agreed on a key, and stacking them
+        // sounded exactly like that.
+        setStatus(`Recording the band (${audioSpecs.length} parts)…`);
+        const stems = await onGenerateSong({
+          onProgress: setStatus,
+          tracks: audioSpecs.map((spec, i) => ({
+            part: spec.part,
+            name: spec.name,
+            instrument: spec.instrument,
+            voice_index: voices[plan.tracks.indexOf(spec)].index,
+            voice_count: roleTotals[voices[plan.tracks.indexOf(spec)].role] || 1,
+          })),
+          style: plan.style || undefined,
+          production: plan.production || undefined,
+          bars: plan.bars || undefined,
+        });
+        for (const stem of stems) {
+          await addStem(stem, stem.part, stem.name || stem.part, plan.style);
+        }
+      } else {
+        for (const spec of audioSpecs) {
+          const part = spec.part;
+          const label = spec.name || part;
+          const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
+          setStatus(`Generating ${label}…`);
+          const result = await onGenerateStem({
+            part,
+            style,
+            name: spec.name,
+            instrument: spec.instrument,
+            production: plan.production || undefined,
+            voice_index: voices[plan.tracks.indexOf(spec)].index,
+            voice_count: roleTotals[voices[plan.tracks.indexOf(spec)].role] || 1,
+            ensemble,
+          });
+          await addStem(result, part, label, style);
+        }
       }
       setStatus(plan.notes || '');
     } catch (e) {
@@ -485,22 +564,6 @@ export default function Studio({
         <span className="bar-sep" />
 
         <div className="bar-group">
-          <div className="tools">
-            {[
-              { id: 'move', label: 'Move', hint: 'Drag clips, drag edges to trim (1)' },
-              { id: 'range', label: 'Select', hint: 'Drag to highlight, drag the highlight out to split (2)' },
-            ].map((t) => (
-              <button
-                key={t.id}
-                className={`tool-btn${tool === t.id ? ' on' : ''}`}
-                onClick={() => setTool(t.id)}
-                title={t.hint}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
           <label className="snap-ctl" title="Snap clips to this grid division">
             snap
             <select value={snapId} onChange={(e) => setSnapId(e.target.value)}>
@@ -601,6 +664,7 @@ export default function Studio({
           </div>
         )}
 
+        {tracks.length > 0 && (
         <div className="lanes-scroll" ref={scrollRef} onWheel={onWheel}>
           <div style={{ width: laneW }}>
             <Ruler
@@ -620,7 +684,6 @@ export default function Studio({
                   pps={pps}
                   secondsPerBar={secondsPerBar}
                   snapDiv={snapDiv}
-                  tool={tool}
                   snapSec={snapSec}
                   selectedClipId={selected?.clipId}
                   region={region}
@@ -650,6 +713,7 @@ export default function Studio({
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {selClip && selTrack && selTrack.kind === 'midi' && (
@@ -706,16 +770,44 @@ export default function Studio({
 // Describe an arrangement in words; parse it into parts + style and
 // generate each one. The plan is shown before you commit, because a
 // misread request costs a minute of generation.
+//
+// The mode is picked, not inferred. "Give me a drum backing track" is one
+// stem to a musician and a whole arrangement to a model reading the word
+// "track", and there is no phrasing that reliably separates the two — so
+// the user says which they want and the agent is told, not asked.
+const MODES = [
+  { id: 'stems', label: 'Separate tracks', hint: 'One generated track per instrument' },
+  { id: 'single', label: 'One track', hint: 'The whole band rendered as a single track' },
+  { id: 'midi', label: 'MIDI', hint: 'Editable notes in the piano roll, not audio' },
+];
+
 function AskBar({ busy, onRun, status }) {
   const [text, setText] = useState('');
+  const [mode, setMode] = useState('stems');
 
   const submit = (e) => {
     e.preventDefault();
-    if (!busy && text.trim()) onRun(text);
+    if (!busy && text.trim()) onRun(text, mode);
   };
+
+  const selected = MODES.find((m) => m.id === mode);
 
   return (
     <form className="askbar" onSubmit={submit}>
+      <select
+        className="ask-mode"
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+        disabled={busy}
+        title={selected?.hint}
+        aria-label="What to generate"
+      >
+        {MODES.map((m) => (
+          <option key={m.id} value={m.id} title={m.hint}>
+            {m.label}
+          </option>
+        ))}
+      </select>
       <input
         className="ask-input"
         placeholder="Describe what you want — “bass, drums and piano, bossa nova”"
@@ -727,7 +819,7 @@ function AskBar({ busy, onRun, status }) {
         {busy ? '…' : 'Generate'}
       </button>
       <span className="ask-plan">
-        {status || (text.trim() ? 'Ask the agent to plan and generate tracks' : '')}
+        {status || (text.trim() ? selected?.hint : '')}
       </span>
     </form>
   );
@@ -867,7 +959,6 @@ function Lane({
   pps,
   secondsPerBar,
   snapDiv,
-  tool,
   snapSec,
   selectedClipId,
   region,
@@ -906,7 +997,6 @@ function Lane({
           color={KIND_COLOR[track.kind] || '#c4d4d6'}
           pps={pps}
           height={height}
-          tool={tool}
           snapSec={snapSec}
           selected={selectedClipId === c.id}
           region={region?.clipId === c.id ? region : null}
@@ -1016,6 +1106,7 @@ function ClipInspector({
   }, [clip, secondsPerBar]);
 
   const isPart = track.kind !== 'audio';
+  const [shareLabel, setShareLabel] = useState('Share');
   const download = () => {
     import('../wav.js').then(({ audioBufferToWav }) => {
       if (!buffer) return;
@@ -1026,6 +1117,41 @@ function ClipInspector({
       a.download = `${track.name}.wav`;
       a.click();
       URL.revokeObjectURL(url);
+    });
+  };
+  // Share just this track. Native share sheet with the rendered WAV when the
+  // browser supports sharing files; otherwise copy the clip's server URL to
+  // the clipboard. Button label reports what happened, since the inspector
+  // has no toast of its own.
+  const flashLabel = (text) => {
+    setShareLabel(text);
+    window.setTimeout(() => setShareLabel('Share'), 2000);
+  };
+  const share = () => {
+    import('../wav.js').then(async ({ audioBufferToWav }) => {
+      if (!buffer) return;
+      const wav = audioBufferToWav(buffer, clip.offset, clip.duration);
+      const file = new File([wav], `${track.name}.wav`, { type: 'audio/wav' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: track.name });
+        } catch {
+          /* user dismissed the share sheet */
+        }
+        return;
+      }
+      if (clip.audioUrl) {
+        const url = new URL(clip.audioUrl, window.location.origin).href;
+        try {
+          await navigator.clipboard.writeText(url);
+          flashLabel('Link copied');
+          return;
+        } catch {
+          /* clipboard blocked — fall through to a download */
+        }
+      }
+      download();
+      flashLabel('Downloaded');
     });
   };
   const regionBars = region ? Math.max(1, Math.round((region.b - region.a) / secondsPerBar)) : 0;
@@ -1061,7 +1187,7 @@ function ClipInspector({
           <button
             className="i-btn accent"
             disabled={busy || !region}
-            title={region ? `bars ${regionBars}` : 'range tool: drag on the clip to select a section'}
+            title={region ? `bars ${regionBars}` : "drag across a clip waveform to select a section"}
             onClick={() => onRegenSection({ style: prompt, noise })}
           >
             {region ? `Regen section (${regionBars})` : 'Regen section'}
@@ -1078,6 +1204,9 @@ function ClipInspector({
         </button>
         <button className="i-btn" onClick={download}>
           Download WAV
+        </button>
+        <button className="i-btn" onClick={share}>
+          {shareLabel}
         </button>
         <button className="i-btn danger" onClick={onDelete} title="Delete/Backspace">
           Delete clip

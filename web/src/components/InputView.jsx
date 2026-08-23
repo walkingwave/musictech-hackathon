@@ -13,14 +13,15 @@ const STEMS = [
 
 export default function InputView({
   analysis,
+  pitchTracking,
   fileName,
   backends,
   backend,
   onBackend,
   prompt,
   onPrompt,
-  selected,
-  onToggleStem,
+  target,
+  onTarget,
   bars,
   onBars,
   onSubmitVocal,
@@ -29,17 +30,13 @@ export default function InputView({
 }) {
   return (
     <div className="view">
-      <Section num="01" title="Source Audio" meta="WAV · MP3 · M4A">
+      <Section num="01" title="Hum Input" meta="ONE CLEAR VOICE">
         <Recorder onSubmit={onSubmitVocal} fileName={fileName} />
       </Section>
 
-      <Section num="02" title="Backing Track Prompt" meta="Free Text">
-        <textarea
-          placeholder="Warm neo-soul backing: brushed drums, upright-ish bass, mellow Rhodes comping…"
-          value={prompt}
-          onChange={(e) => onPrompt(e.target.value)}
-        />
-        <p className="help">One description applies to all generated stems.</p>
+      <Section num="02" title="MIDI Transformation" meta="EDITABLE NOTES">
+        <p className="help">Hum one unaccompanied line; Melody preserves detected notes while Bassline intentionally rearranges them.</p>
+        {pitchTracking && <p className="help">{pitchTracking.note_count} detected notes · {pitchTracking.tracker_id}{pitchTracking.diagnostics?.warnings?.length ? ` · ${pitchTracking.diagnostics.warnings[0]}` : ''}</p>}
       </Section>
 
       {analysis && (
@@ -48,8 +45,8 @@ export default function InputView({
           backends={backends}
           backend={backend}
           onBackend={onBackend}
-          selected={selected}
-          onToggleStem={onToggleStem}
+          target={target}
+          onTarget={onTarget}
           bars={bars}
           onBars={onBars}
           onGenerate={onGenerate}
@@ -65,8 +62,8 @@ function Settings({
   backends,
   backend,
   onBackend,
-  selected,
-  onToggleStem,
+  target,
+  onTarget,
   bars,
   onBars,
   onGenerate,
@@ -76,6 +73,8 @@ function Settings({
   const [key, setKey] = useState(analysis.key);
   const [mode, setMode] = useState(analysis.mode);
   const [chords, setChords] = useState(analysis.bars.map((b) => b.chord));
+  const [snapToKey, setSnapToKey] = useState(false);
+  const [quantize, setQuantize] = useState(false);
 
   useEffect(() => {
     setBpm(analysis.bpm);
@@ -90,7 +89,7 @@ function Settings({
     const tempoChanged = Math.abs(Number(bpm) - analysis.bpm) > 0.05;
     const edit = { bpm: Number(bpm), key, mode };
     if (!tempoChanged) edit.chords = chords;
-    onGenerate(edit);
+    onGenerate(edit, { faithful: target === 'melody', snap_to_key: snapToKey, quantize });
   };
 
   return (
@@ -131,41 +130,18 @@ function Settings({
             </div>
           </div>
 
-          <div className="field">
-            <span className="field-label">Backend</span>
-            <select value={backend} onChange={(e) => onBackend(e.target.value)}>
-              {backends.map((b) => (
-                <option key={b.id} value={b.id} disabled={!b.available}>
-                  {b.label}
-                  {b.available ? '' : ' — unavailable'}
-                </option>
-              ))}
-            </select>
-            <div className="row" style={{ marginTop: '0.6rem' }}>
-              <span className="unit">length</span>
-              <input
-                type="number"
-                min="1"
-                max="128"
-                value={bars}
-                onChange={(e) => onBars(Number(e.target.value))}
-                style={{ width: '5rem' }}
-              />
-              <span className="unit">bars</span>
-            </div>
-          </div>
 
           <div className="field divide">
-            <span className="field-label">Stems</span>
+            <span className="field-label">Transform Hum Into</span>
             <div className="chips">
-              {STEMS.map((s) => (
+              {[{ id: 'melody', label: 'Melody' }, { id: 'bass', label: 'Bassline' }].map((option) => (
                 <button
-                  key={s.id}
+                  key={option.id}
                   type="button"
-                  className={`chip${selected.has(s.id) ? ' on' : ''}`}
-                  onClick={() => onToggleStem(s.id)}
+                  className={`chip${target === option.id ? ' on' : ''}`}
+                  onClick={() => onTarget(option.id)}
                 >
-                  {s.label}
+                  {option.label}
                 </button>
               ))}
             </div>
@@ -173,6 +149,12 @@ function Settings({
         </div>
 
         <div className="field" style={{ marginTop: '1.4rem' }}>
+          {target === 'melody' && (
+            <div className="row" style={{ marginBottom: '0.8rem' }}>
+              <label><input type="checkbox" checked={snapToKey} onChange={(e) => setSnapToKey(e.target.checked)} /> Snap pitches to key</label>
+              <label><input type="checkbox" checked={quantize} onChange={(e) => setQuantize(e.target.checked)} /> Quantize timing</label>
+            </div>
+          )}
           <span className="field-label">Chords · One Per Bar</span>
           <div className="chord-grid">
             {chords.map((chord, i) => (
@@ -195,14 +177,14 @@ function Settings({
         <button
           type="button"
           className="solid"
-          disabled={generating || selected.size === 0}
+          disabled={generating}
           onClick={generate}
         >
-          {generating ? 'Generating…' : 'Generate'}
+          {generating ? 'Transforming…' : 'Transform Hum to MIDI'}
         </button>
         <p>
-          BPM, key, and chords can be edited before generating. Stems appear in
-          the Tracks view as they finish.
+          Melody defaults to faithful detected pitch and timing. Key snapping and
+          quantization are optional; Bassline intentionally reinterprets the hum.
         </p>
       </div>
     </>

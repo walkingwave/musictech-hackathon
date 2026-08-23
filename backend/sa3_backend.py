@@ -22,6 +22,7 @@ import io
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -119,6 +120,10 @@ class _MLXRuntime:
 
     label = f"{config.MLX_DIT} (MLX)"
 
+    def status(self) -> str:
+        """ready | not-installed. MLX weights are ungated, so no access step."""
+        return "ready" if self.available() else "not-installed"
+
     def available(self) -> bool:
         installed = config.mlx_venv_python().is_file()
         # Weights are checked too, not just the install. The MLX CLI
@@ -176,19 +181,69 @@ class _TorchRuntime:
 
     label = f"{config.TORCH_DIT} (PyTorch)"
 
+    # How long a non-ready status probe is trusted before re-checking. A
+    # "ready" result is cached forever (access does not get revoked mid-run);
+    # a "no access" or "offline" result is re-probed after this, so granting
+    # access on Hugging Face takes effect without a server restart.
+    _PROBE_TTL = 30.0
+
     def __init__(self):
         self._model = None
+        self._status = None  # (status_str, checked_at)
 
-    def available(self) -> bool:
-        # Import-only check: cheap, and it does not touch the (gated) weights.
-        # A missing weight or a missing HF login surfaces at generate time and
-        # is caught by the fallback, same as any other backend failure.
+    def installed(self) -> bool:
         import importlib.util
 
         return (
             importlib.util.find_spec("stable_audio_3") is not None
             and importlib.util.find_spec("torch") is not None
         )
+
+    def status(self) -> str:
+        """One of: ready | no-access | offline | not-installed.
+
+        Cheap and cached. "ready" means either the weights are already in the
+        HF cache (usable offline) or the gated repo is accessible with the
+        current token. Anything else means picking `local` would fail, so the
+        selector should say so rather than silently falling back to mock.
+        """
+        now = time.monotonic()
+        if self._status is not None:
+            value, checked = self._status
+            if value == "ready" or now - checked < self._PROBE_TTL:
+                return value
+        value = self._probe()
+        self._status = (value, now)
+        return value
+
+    def _probe(self) -> str:
+        if not self.installed():
+            return "not-installed"
+        try:
+            from stable_audio_3.model_configs import models
+            from huggingface_hub import auth_check, try_to_load_from_cache
+            from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
+        except Exception:  # noqa: BLE001 - treat any import failure as not installed
+            return "not-installed"
+
+        cfg = models.get(config.TORCH_DIT)
+        if cfg is None:
+            return "no-access"  # unknown DiT name; nothing we can verify
+
+        # Already downloaded once -> usable with no network at all.
+        if isinstance(try_to_load_from_cache(cfg.repo_id, cfg.ckpt_path), str):
+            return "ready"
+
+        try:
+            auth_check(cfg.repo_id)  # raises if the gated repo is not accessible
+            return "ready"
+        except (GatedRepoError, RepositoryNotFoundError):
+            return "no-access"
+        except Exception:  # noqa: BLE001 - network down, not cached: cannot confirm
+            return "offline"
+
+    def available(self) -> bool:
+        return self.status() == "ready"
 
     def _load(self):
         if self._model is None:
@@ -242,7 +297,17 @@ class LocalBackend:
     """
 
     id = "local"
-    note = "free, offline, no account needed"
+
+    # Notes per non-ready state, so the disabled option says *why* and what to
+    # do about it rather than just "unavailable".
+    _NOTES = {
+        "no-access": (
+            "needs Hugging Face access — accept the licence at "
+            "huggingface.co/stabilityai/stable-audio-3-small-music"
+        ),
+        "offline": "installed, but can't reach Hugging Face to verify access",
+        "not-installed": "not installed — run: uv sync --extra local",
+    }
 
     def __init__(self):
         # MLX first: on a Mac it is the faster runtime; off a Mac it is never
@@ -255,7 +320,20 @@ class LocalBackend:
     @property
     def label(self) -> str:
         active = self._active()
-        return f"Local — {active.label}" if active else "Local (not installed)"
+        return f"Local — {active.label}" if active else "Local"
+
+    @property
+    def note(self) -> str:
+        if self._active() is not None:
+            return "free, offline, no account needed"
+        # Not runnable: report the most actionable runtime's status. Torch is
+        # the one installable everywhere, so prefer its reason unless it is
+        # simply absent and MLX has a more specific one.
+        statuses = [r.status() for r in self._runtimes]
+        for state in ("no-access", "offline", "not-installed"):
+            if state in statuses:
+                return self._NOTES[state]
+        return "not installed — run: uv sync --extra local"
 
     def available(self) -> bool:
         return self._active() is not None
@@ -271,14 +349,20 @@ class LocalBackend:
 
 
 class StabilityAPIBackend:
-    """Stability's hosted audio-to-audio endpoint.
+    """Stable Audio 3 Large, on Stability's hosted audio-to-audio endpoint.
+
+    `large` is API-only — there are no open weights for it, so this is the
+    only way to reach it. The model is named explicitly in the request rather
+    than left to the endpoint's default: the neighbouring `stable-audio-2`
+    path serves 2.5 and takes the same fields, so a wrong URL degrades
+    silently instead of failing.
 
     Responses are cached on disk keyed by the full request, so re-running
     an identical generation costs neither a credit nor a round trip.
     """
 
     id = "api"
-    label = "Stability API — large"
+    label = "Stability API — Stable Audio 3 Large"
     note = "best quality, uses credits, needs network"
 
     def available(self) -> bool:
@@ -300,27 +384,74 @@ class StabilityAPIBackend:
 
         response = httpx.post(
             config.STABILITY_API_URL,
-            headers={
-                "Authorization": f"Bearer {config.STABILITY_API_KEY}",
-                "Accept": "audio/*",
-            },
+            headers=self._headers("audio/*"),
             files={"audio": ("guide.wav", wav_bytes, "audio/wav")},
             data={
+                "model": config.STABILITY_MODEL,
                 "prompt": prompt,
                 "strength": str(noise),
-                "duration": str(int(duration)),
-                "seed": str(seed),
+                "duration": str(min(int(duration), config.STABILITY_MAX_DURATION)),
+                "seed": str(max(0, int(seed))),
                 "output_format": "wav",
             },
             timeout=180.0,
         )
         response.raise_for_status()
 
-        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(response.content)
+        audio_bytes = self._resolve(response)
 
-        audio, _ = sf.read(io.BytesIO(response.content), dtype="float32")
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(audio_bytes)
+
+        audio, _ = sf.read(io.BytesIO(audio_bytes), dtype="float32")
         return _to_mono_numpy(audio)
+
+    @staticmethod
+    def _headers(accept: str) -> dict[str, str]:
+        """Auth plus an `Accept` the endpoint being called will take.
+
+        The two endpoints disagree about it, and each rejects the other's
+        value, so it cannot be shared: the generation call wants `audio/*`
+        (`*/*` is a 400), while the results call wants `*/*` (`audio/*` is a
+        400, and `application/json` makes it try to wrap a wav in a JSON
+        shape it does not have and return a 500).
+        """
+        return {
+            "Authorization": f"Bearer {config.STABILITY_API_KEY}",
+            "Accept": accept,
+        }
+
+    def _resolve(self, response: httpx.Response) -> bytes:
+        """The finished wav, whether the endpoint answered now or queued a job.
+
+        Stable Audio 3 is asynchronous: the POST returns `202 Accepted` with a
+        job id, and the audio has to be collected from `/v2beta/results/{id}`,
+        which itself answers `202` until the job finishes. Older endpoints
+        return the wav from the POST directly, so both are handled - a `200`
+        is already the audio.
+        """
+        if response.status_code == 200:
+            return response.content
+
+        job_id = response.json().get("id")
+        if not job_id:
+            raise RuntimeError(f"no job id in {response.status_code} response")
+
+        url = f"{config.STABILITY_RESULTS_URL}/{job_id}"
+        deadline = time.monotonic() + config.STABILITY_POLL_TIMEOUT
+        log.info("api job %s queued, polling", job_id[:8])
+
+        while time.monotonic() < deadline:
+            time.sleep(config.STABILITY_POLL_INTERVAL)
+            result = httpx.get(url, headers=self._headers("*/*"), timeout=60.0)
+            if result.status_code == 200:
+                return result.content
+            if result.status_code != 202:
+                result.raise_for_status()
+
+        raise RuntimeError(
+            f"job {job_id[:8]} not finished after {config.STABILITY_POLL_TIMEOUT:.0f}s"
+        )
 
 
 # --- registry -----------------------------------------------------------
@@ -357,15 +488,22 @@ def generate_with_fallback(
     noise: float,
     duration: float,
     seed: int,
-) -> tuple[np.ndarray, str]:
+) -> tuple[np.ndarray, str, str | None]:
     """Generate, degrading to a working backend if the chosen one fails.
 
-    Returns (audio, backend_actually_used). A live demo must never show a
-    stack trace because the venue wifi dropped — it should quietly produce
-    something and tell the user what happened.
+    Returns (audio, backend_actually_used, fallback_error). A live demo must
+    never show a stack trace because the venue wifi dropped — it should
+    quietly produce something and tell the user what happened. The third
+    value is why the *requested* backend did not run, so the UI can say
+    "Stability returned HTTP 404" instead of leaving the user to wonder why
+    the result sounds like the mock.
     """
     chosen = get(backend_id)
     candidates = [chosen] + [BACKENDS[i] for i in FALLBACK_ORDER if BACKENDS[i].id != chosen.id]
+
+    failure: str | None = None
+    if not chosen.available():
+        failure = f"{chosen.id} is unavailable — {describe_state(chosen)}"
 
     last_error: Exception | None = None
     for backend in candidates:
@@ -373,12 +511,41 @@ def generate_with_fallback(
             continue
         try:
             audio = backend.generate(prompt, init_audio, noise, duration, seed)
-            return audio, backend.id
+            return audio, backend.id, failure if backend.id != chosen.id else None
         except Exception as error:  # noqa: BLE001 - any failure should fall through
             log.warning("backend %s failed: %s", backend.id, error)
             last_error = error
+            if backend.id == chosen.id:
+                failure = f"{backend.id} failed — {_error_summary(error)}"
 
     raise RuntimeError(f"all backends failed; last error: {last_error}")
+
+
+def describe_state(backend) -> str:
+    """Why a backend cannot run, in words a user can act on."""
+    note = getattr(backend, "note", "")
+    return note or "no reason given"
+
+
+def _error_summary(error: Exception) -> str:
+    """One line, with the HTTP status when there is one.
+
+    httpx raises HTTPStatusError for a bad response; its string form is three
+    lines of URL and doc link, which is useless in a toast. Pull out the code.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        detail = ""
+        try:
+            body = response.json()
+            detail = "; ".join(body.get("errors", [])) or body.get("message", "")
+        except Exception:  # noqa: BLE001 - body may not be JSON
+            detail = (response.text or "").strip()[:120]
+        code = f"HTTP {response.status_code}"
+        return f"{code}{f' ({detail})' if detail else ''}"
+    if isinstance(error, httpx.RequestError):
+        return f"network error — {type(error).__name__}"
+    return f"{type(error).__name__}: {error}".strip()[:160]
 
 
 # --- conversion helpers -------------------------------------------------
@@ -389,6 +556,10 @@ def _cache_key(prompt: str, init_audio: np.ndarray, noise: float, duration: floa
     digest.update(prompt.encode())
     digest.update(init_audio.tobytes())
     digest.update(f"{noise}|{duration}|{seed}".encode())
+    # The model is part of the request, so it has to be part of the key -
+    # otherwise everything cached from the old 2.5 endpoint would be replayed
+    # as if it came from 3 Large.
+    digest.update(f"|{config.STABILITY_MODEL}".encode())
     return digest.hexdigest()
 
 

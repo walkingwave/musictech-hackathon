@@ -28,6 +28,7 @@ import soundfile as sf
 
 from .config import SAMPLE_RATE, SESSIONS_DIR
 from .models import Analysis, Arrangement, StemResult
+from .melody import Note
 
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
@@ -100,6 +101,48 @@ class Session:
             audio = audio.mean(axis=1)
         return audio, sr
 
+    def read_stems(
+        self,
+        exclude: str = "",
+        limit: int | None = None,
+        skip_parts: tuple[str, ...] = (),
+    ) -> list[tuple[str, np.ndarray]]:
+        """Finished stems as mono audio, oldest first.
+
+        Used to give a new part the ones already on the timeline as context,
+        so it is generated against the band rather than in a vacuum.
+
+        `limit` keeps only the most recent N. A session accumulates every
+        take a user tried — a rave experiment, a jazz one, three versions of
+        the drums — and handing all of them to the model as "the band" is
+        worse than handing it nothing. The newest few are the ones the user
+        is actually working with.
+
+        Silent stems are skipped: they contribute nothing but do count
+        against the limit, so a dead take could otherwise crowd out a live
+        one.
+        """
+        names = list(self._read_meta().get("stems") or {})
+        out: list[tuple[str, np.ndarray]] = []
+        for name in reversed(names):  # newest first while filling the quota
+            if name == exclude:
+                continue
+            meta = (self._read_meta().get("stems") or {}).get(name) or {}
+            if meta.get("part") in skip_parts:
+                continue
+            path = self.stem_path(name)
+            if not path.is_file():
+                continue
+            audio, _ = sf.read(path, dtype="float32")
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            if not audio.size or float(np.abs(audio).max()) < 1e-4:
+                continue
+            out.append((name, audio))
+            if limit is not None and len(out) >= limit:
+                break
+        return list(reversed(out))
+
     def write_audio(self, path: Path, audio: np.ndarray) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(path, audio, SAMPLE_RATE)
@@ -154,6 +197,20 @@ class Session:
         meta["analysis"] = analysis.to_dict()
         self._write_meta(meta)
 
+    def save_hum_notes(self, notes: list[Note], tracking: dict | None = None) -> None:
+        """Persist note events and bounded tracker provenance for reproduction."""
+        meta = self._read_meta()
+        meta["hum_notes"] = [
+            {"pitch": note.pitch, "start": note.start, "end": note.end} for note in notes
+        ]
+        if tracking is not None:
+            meta["pitch_tracking"] = tracking
+        self._write_meta(meta)
+
+    @property
+    def hum_notes(self) -> list[Note]:
+        return [Note(**note) for note in self._read_meta().get("hum_notes", [])]
+
     @property
     def arrangement(self) -> Arrangement:
         """Session-wide style and length. Empty until the first generation."""
@@ -167,6 +224,12 @@ class Session:
     def save_stem(self, result: StemResult) -> None:
         meta = self._read_meta()
         meta["stems"][result.name] = result.to_dict()
+        self._write_meta(meta)
+
+    def save_transform(self, name: str, transform: dict) -> None:
+        """Persist MIDI-only output separately from audio stems."""
+        meta = self._read_meta()
+        meta.setdefault("transforms", {})[name] = transform
         self._write_meta(meta)
 
     def to_dict(self) -> dict:

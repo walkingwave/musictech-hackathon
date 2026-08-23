@@ -33,6 +33,17 @@ log = logging.getLogger(__name__)
 GROOVE_NAMES = [g.name for g in grooves.ALL]
 
 
+def hum_target(text: str) -> str:
+    """Resolve the musical role requested for a recorded hum.
+
+    The UI offers an explicit control, but this keeps API clients and prompt-led
+    flows useful: “bassline”, “low end”, and “bass” choose bass; every other
+    request defaults to preserving the hum as a melody.
+    """
+    lowered = text.lower()
+    return "bass" if re.search(r"\bbass(?:line)?\b|\blow end\b|\bsub\b", lowered) else "melody"
+
+
 class TrackSpec(BaseModel):
     part: str = Field(
         description=f"The arranger to use — one of: {', '.join(PARTS)}. This "
@@ -53,6 +64,12 @@ class TrackSpec(BaseModel):
         description="Playing style for this track only, if different from the "
         "arrangement's. Usually empty.",
     )
+    midi: bool = Field(
+        default=False,
+        description="True to WRITE this part as editable MIDI notes instead of "
+        "generating audio. Choose it when the user asks for notes, MIDI, a "
+        "written phrase, or something they want to edit afterwards.",
+    )
 
 
 class Plan(BaseModel):
@@ -65,6 +82,12 @@ class Plan(BaseModel):
     key: str | None = Field(default=None, description="Tonic note, e.g. 'A', 'Bb'")
     mode: str | None = Field(default=None, description="'major' or 'minor'")
     bars: int | None = None
+    production: str = Field(
+        default="",
+        description="How the whole arrangement is recorded — room, mics, era, "
+        "tape, mix character. Shared by every part, which is what makes "
+        "separately generated stems sound like one band.",
+    )
     notes: str = Field(
         default="",
         description="One short line for the user: what was understood, and "
@@ -91,18 +114,69 @@ Rules:
     guitar  chords in a mid register, plucked or strummed
     drums   unpitched percussion of any kind (kit, cymbals, timpani,
             congas, tambourine, shaker)
-    harmony sustained pads, strings, choir, brass swells
+    harmony sustained pads, a string or brass SECTION, choir — held chords
+            behind everything else, never the tune
+    melody  the tune itself: a single lead line. A solo violin, flute, sax,
+            trumpet, cello or lead synth playing a melody is `melody`, not
+            `harmony`. If the user names one instrument and expects to hear
+            it out front, it is `melody`.
+    mix     the WHOLE band rendered as ONE track instead of separate parts.
+            This is opt-in, never the default: use it only when the user
+            explicitly asks for a single track — "as one track", "one file",
+            "don't split it", "a full mix", "one whole song in one go". A
+            plain "make me an EDM track" is NOT that; it wants a playable
+            arrangement, which means separate parts they can mix and edit.
+            When you do use it, return it as the ONLY track and describe the
+            whole band in its `instrument`.
+    free    an instrument with no clear rhythmic role
+- NEVER substitute one named instrument for another. If the user says
+  "piano chords", the part is `piano` and the instrument says piano — not
+  guitar, not Rhodes, not "keys". A named instrument is the one thing in the
+  request you are not allowed to reinterpret. Only when the user names no
+  instrument at all ("something warm underneath") do you get to choose one.
+  When two parts could carry the role, the instrument's own family decides:
+  anything struck or keyed is `piano`, anything strummed or plucked with
+  frets is `guitar`.
+- `instrument` must repeat the instrument the user named, in its own words,
+  as the FIRST thing it says. "acoustic grand piano, close-miked, warm" is
+  right for "piano chords"; "warm chordal instrument" is not.
 - Never drop an instrument the user asked for. Produce one track for every
   one of them, and if the user says "4 more tracks", return four.
 - The user may want several tracks sharing a part — a xylophone and a piano
   are both `part: "piano"`. That is fine and expected. Give each a distinct
   `name`.
-- Infer tempo and key only when the user implies them ("slow", "in D minor",
-  "90 BPM"). Otherwise leave them null; the app has its own defaults.
+- Tempo, key and mode are part of the brief even when the user gives no
+  numbers. A mood implies them: "slow and sad" is not 120 BPM in C major.
+  Set `bpm`, `key` and `mode` whenever the request carries ANY musical
+  intent — a genre, a mood, an energy, a reference artist — and pick values
+  that a musician would actually choose for it:
+    sad, mournful, heartbroken     60-75 BPM, minor
+    calm, dreamy, ambient          70-90 BPM, major or minor
+    warm, hopeful, folky           90-110 BPM, major
+    driving, upbeat, pop/rock      110-130 BPM, major
+    dance, house, energetic        120-128 BPM, minor
+    aggressive, dark, trap/metal   70-90 or 140-160 BPM, minor
+  Leave them null ONLY when the request is purely about the sound of one
+  instrument and says nothing about the music ("swap the bass for a Rhodes").
+  Changing them is expected and wanted: the app updates its tempo and key
+  boxes from your answer, so a sad ballad request should return a slow tempo
+  and a minor key even if the session currently says 120 BPM C major.
+- `production` describes the RECORDING, not the music, and every part of the
+  arrangement is generated with it. This is the only thing making separately
+  generated stems sound like one band in one room, so it has to be concrete:
+  room size, mic distance, era, tape or digital, mix character. Six to twelve
+  words. E.g. "close-miked in a small dry studio, warm analog tape, gentle
+  compression" or "roomy 70s live take, ribbon mics, soft saturation". Never
+  name an instrument in it.
 - Put genre and mood in the top-level `style`. Use a track's own `style`
   only for something specific to that instrument.
 - `notes` is one short line addressed to the user. Do not restate the plan
   back to them — mention only substitutions, ambiguity, or anything ignored.
+- Set `midi: true` on a track when the user wants NOTES rather than a
+  recording: "write me a bassline", "compose a piano phrase", "give me a
+  MIDI riff I can edit". A MIDI track arrives in the piano roll and can be
+  edited note by note. Everything else stays `midi: false` and is generated
+  as audio.
 """
 
 
@@ -129,11 +203,94 @@ class Context(BaseModel):
         if self.key:
             lines.append(f"- key: {self.key} {self.mode or ''}".strip())
         lines.append(
-            "Unless the user is explicitly changing them, keep style, tempo and key "
-            "as they are and return only the NEW parts to add. Everything must sit "
-            "in the same arrangement as what is already there."
+            "Return only the NEW parts to add, and keep style, tempo and key as "
+            "they are unless the request carries a mood or genre of its own — a "
+            "request for something slow and sad should change them, a request to "
+            "swap one instrument should not. Everything must sit in the same "
+            "arrangement as what is already there."
         )
         return "\n".join(lines)
+
+# What the user asked the request to produce. Passed explicitly by the UI so
+# the agent never has to infer it from phrasing — "give me a drum backing
+# track" is one stem to a musician and a whole arrangement to a model reading
+# the word "track", and guessing wrong either way is worse than asking.
+MODES = ("stems", "single", "midi")
+
+MODE_RULES = {
+    "stems": (
+        "MODE: separate tracks. Return one track per instrument, `midi` false "
+        "on all of them, and NEVER `part: \"mix\"`. Return exactly the "
+        "instruments the user named; choose the parts yourself only if they "
+        "named none."
+    ),
+    "single": (
+        "MODE: one track. Return EXACTLY ONE track with `part: \"mix\"` and "
+        "`midi` false, describing the whole band in its `instrument`. Never "
+        "return more than one track in this mode."
+    ),
+    "midi": (
+        "MODE: MIDI. Return one track per instrument with `midi` true on every "
+        "one, and NEVER `part: \"mix\"`. These become editable note tracks, so "
+        "describe an instrument that plays notes, not a full mix."
+    ),
+}
+
+
+def _apply_mode(plan: Plan, mode: str | None) -> Plan:
+    """Force the plan to match the mode the user picked.
+
+    The system prompt already asks for it, but a mode the user chose from a
+    control is a fact, not a preference — so it is enforced here rather than
+    hoped for. Anything the model returns that contradicts it is corrected.
+    """
+    if mode not in MODES:
+        return plan
+
+    if mode == "single":
+        if len(plan.tracks) != 1 or plan.tracks[0].part != "mix":
+            # Collapse whatever came back into one mix track, keeping every
+            # instrument named so the description still covers the band.
+            described = ", ".join(
+                t.instrument.strip() or t.name for t in plan.tracks if (t.instrument or t.name)
+            )
+            plan.tracks = [
+                TrackSpec(
+                    part="mix",
+                    name=plan.style.title() if plan.style else "Full mix",
+                    instrument=described or plan.style,
+                    style="",
+                    midi=False,
+                )
+            ]
+        plan.tracks[0].midi = False
+        return plan
+
+    # stems and midi both want per-instrument tracks; a mix is never one.
+    if any(t.part == "mix" for t in plan.tracks):
+        expanded: list[TrackSpec] = []
+        for track in plan.tracks:
+            if track.part != "mix":
+                expanded.append(track)
+                continue
+            # One mix asked for as separate parts becomes the band it stood
+            # for, all sharing its description.
+            for part in ("drums", "bass", "piano", "melody"):
+                expanded.append(
+                    TrackSpec(
+                        part=part,
+                        name=part.title(),
+                        instrument=track.instrument,
+                        style=track.style,
+                        midi=False,
+                    )
+                )
+        plan.tracks = expanded
+
+    for track in plan.tracks:
+        track.midi = mode == "midi"
+    return plan
+
 
 
 def interpret(text: str, context: Context | None = None) -> Plan:
@@ -146,13 +303,21 @@ def interpret(text: str, context: Context | None = None) -> Plan:
     return plan
 
 
-def interpret_with_source(text: str, context: Context | None = None) -> tuple[Plan, str]:
-    """Best available interpretation plus the provider that actually produced it."""
+def interpret_with_source(
+    text: str, context: Context | None = None, mode: str | None = None
+) -> tuple[Plan, str]:
+    """Best available interpretation plus the provider that actually produced it.
+
+    `mode` is the output shape the user picked in the UI — separate tracks, one
+    track, or MIDI. It is applied to whichever interpreter answered, so the
+    offline fallback obeys it too.
+    """
     try:
-        return _interpret_with_deepseek(text, context), "deepseek"
+        plan, source = _interpret_with_deepseek(text, context, mode), "deepseek"
     except Exception as error:  # noqa: BLE001 - any failure falls back to rules
         log.info("falling back to keyword parsing: %s", error)
-        return _interpret_with_rules(text, context), "rules"
+        plan, source = _interpret_with_rules(text, context), "rules"
+    return _apply_mode(plan, mode), source
 
 
 def interpreter_name() -> str:
@@ -164,12 +329,15 @@ def deepseek_available() -> bool:
     return config.BTG_AGENT_PROVIDER == "deepseek" and bool(config.DEEPSEEK_API_KEY)
 
 
-def _interpret_with_deepseek(text: str, context: Context | None) -> Plan:
+def _interpret_with_deepseek(text: str, context: Context | None, mode: str | None = None) -> Plan:
     """Use DeepSeek JSON mode to produce the same Plan shape the UI already executes."""
     if not deepseek_available():
         raise RuntimeError("DeepSeek is not configured")
 
     system = _deepseek_system_prompt()
+    if mode in MODE_RULES:
+        # Last, so it wins over anything general the prompt said about shape.
+        system = f"{system}\n\n{MODE_RULES[mode]}"
     if context and (described := context.describe()):
         system = f"{system}\n\n{described}"
 
@@ -210,10 +378,11 @@ The json object must match this exact shape:
 {{
   "tracks": [
     {{
-      "part": "bass | piano | guitar | drums | harmony | free",
+      "part": "bass | piano | guitar | drums | harmony | melody | mix | free",
       "name": "short track name",
       "instrument": "complete sound description, or empty string for the default",
-      "style": "track-specific style, usually empty"
+      "style": "track-specific style, usually empty",
+      "midi": false
     }}
   ],
   "style": "overall genre or mood, empty string if none",
@@ -222,6 +391,7 @@ The json object must match this exact shape:
   "key": null,
   "mode": null,
   "bars": null,
+  "production": "room, mics, era, tape and mix character - no instruments",
   "notes": ""
 }}
 
@@ -229,9 +399,56 @@ Important:
 - You are not allowed to call Stable Audio 3 directly.
 - You only create a plan for this app to execute.
 - Choose `free` for unknown instruments, textures, effects, or anything with no clear rhythmic role.
-- Preserve existing session tempo, key, style, and length unless the user explicitly changes them.
-- If the user asks for a full arrangement, return bass, drums, piano, and harmony.
+- Keep the existing session tempo, key and style when the request is only
+  about adding or changing a sound. Change them when the request carries a
+  mood or genre of its own — a sad ballad in a session set to 120 BPM C
+  major should come back slow and minor.
+- A named ENSEMBLE counts as naming its members. "Jazz quartet" is four
+  tracks — the named lead plus the rhythm section (e.g. sax, piano, double
+  bass, drums); a trio is three; "full band" is drums, bass, a chordal part
+  and a lead. "A sax solo with a jazz quartet" means the quartet plays too:
+  return every member, not just the soloist.
+- Return EXACTLY the instruments the user named, and nothing else. "Give me a
+  drum backing track" is one drums track — not drums plus a bass, a piano and
+  a lead to go with it. Never add a part they did not ask for, however
+  incomplete the result sounds to you: they are building the arrangement one
+  track at a time, and the parts they have not asked for yet are the ones
+  they are about to.
+- Only when the user names NO instrument at all ("make me something upbeat",
+  "a lo-fi beat") do you choose the parts yourself: drums, bass, a chordal
+  part and a melody. Collapse that into a single `mix` track only when they
+  explicitly ask for one track.
 """
+
+
+# Instruments whose family decides the part, whatever the model answered.
+# The model reassigns "piano chords" to `guitar` often enough that this is
+# worth enforcing in code: the part chooses the arranger, so a wrong part
+# is not a wording problem, it is the wrong notes in the wrong register.
+PART_BY_INSTRUMENT: list[tuple[str, str]] = [
+    (r"\bdrum|\bkit\b|percussion|conga|bongo|tabla|timpani|tambourine|shaker|cymbal|hi-?hat|snare", "drums"),
+    (r"\bbass\b|\b808\b|contrabass|upright bass|sub ?bass|tuba", "bass"),
+    # Role words beat instrument family: a "lead guitar" is a lead that
+    # happens to be a guitar, and arranging it as comping is why a bebop
+    # request came back with two chordal parts and one horn instead of two
+    # soloists trading. "solo" is deliberately absent — "solo piano" means a
+    # piano, not a lead line.
+    (r"\blead\b|\bmelody\b|\btopline\b|\btheme\b|\bsoloist\b", "melody"),
+    # Instruments that only ever play a single line.
+    (r"\bviolin|\bfiddle\b|\bcello\b|\bviola\b|\bflute\b|\bsax|\btrumpet\b|\bclarinet\b|\boboe\b|\bwhistle\b", "melody"),
+    (r"\bpiano\b|rhodes|wurlitzer|clavinet|harpsichord|celesta|organ|keys\b|xylophone|marimba|vibraphone|glockenspiel|kalimba|mallet", "piano"),
+    (r"\bguitar\b|\bukulele\b|banjo|mandolin|sitar|\bharp\b|\blute\b", "guitar"),
+    (r"\bpad\b|\bstrings?\b|\bchoir\b|\bensemble\b|\bsection\b|brass|\bhorns?\b|\bswells?\b", "harmony"),
+]
+
+
+def _part_for_instrument(text: str) -> str | None:
+    """The part a named instrument belongs to, or None if nothing is named."""
+    lowered = text.lower()
+    for pattern, part in PART_BY_INSTRUMENT:
+        if re.search(pattern, lowered):
+            return part
+    return None
 
 
 def _sanitize(plan: Plan) -> Plan:
@@ -242,6 +459,24 @@ def _sanitize(plan: Plan) -> Plan:
     with a confusing error.
     """
     plan.tracks = [t for t in plan.tracks if t.part in PARTS]
+
+    # A named instrument wins over the part the model chose for it. Asking
+    # for piano chords and being handed a guitar is the single most visible
+    # way this feature fails, and it is entirely fixable here.
+    for track in plan.tracks:
+        # A mix describes the whole band, so of course it names instruments.
+        # Correcting it would turn "make me an EDM track" into a drum stem,
+        # which is exactly what happened before this check.
+        if track.part == "mix":
+            continue
+        named = _part_for_instrument(f"{track.name} {track.instrument}")
+        if named and named != track.part and named in PARTS:
+            log.info(
+                "part corrected: %r was %s, instrument says %s",
+                track.name, track.part, named,
+            )
+            track.part = named
+
     if plan.groove not in GROOVE_NAMES:
         plan.groove = grooves.for_style(plan.style).name
     if plan.mode not in ("major", "minor", None):

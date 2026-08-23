@@ -56,7 +56,6 @@ body {
   font-weight: 600;
   height: 46px;
 }
-.wordmark .glyph { width: 11px; height: 11px; background: var(--ink); }
 
 .session {
   display: flex;
@@ -69,6 +68,79 @@ body {
 }
 .session .label { color: var(--muted); letter-spacing: 0.12em; }
 .session .value { color: var(--ink); }
+.session-name {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0.15rem 0.35rem;
+  width: 12rem;
+  max-width: 22vw;
+}
+.session-name:hover { border-color: var(--line); }
+.session-name:focus { border-color: var(--ink); outline: none; background: #fff; }
+
+/* Project menu: the one home for new/open/close/delete/export/share, so the
+   top bar carries only the wordmark, the name, the model and the tabs. */
+.project-menu { position: relative; display: flex; }
+.proj-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 46px;
+  padding: 0 1.1rem;
+  border: none;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted-ink);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.proj-menu-btn:hover, .proj-menu-btn.open { background: #f1efe9; color: var(--ink); }
+.proj-menu-icon { display: flex; flex-direction: column; justify-content: center; gap: 3px; width: 13px; }
+.proj-menu-icon i { display: block; height: 1px; background: currentColor; }
+.proj-menu-pop {
+  position: absolute;
+  top: 46px;
+  left: 0;
+  z-index: 40;
+  min-width: 13rem;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 8px 24px rgba(26, 26, 26, 0.12);
+}
+.proj-menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-align: left;
+  cursor: pointer;
+}
+.proj-menu-item:hover:not(:disabled) { background: #f1efe9; }
+.proj-menu-item:disabled { opacity: 0.35; cursor: not-allowed; }
+.proj-menu-item.danger { color: var(--hot); }
+.proj-menu-sep { height: 1px; margin: 4px 0; background: var(--line); }
+
+.model-note {
+  color: #b06a00;
+  font-size: 0.64rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .model-select {
   display: flex;
@@ -438,11 +510,14 @@ input[type="range"] { accent-color: var(--ink); }
 
 .clip {
   position: absolute; top: 3px; border-radius: 0; overflow: hidden;
-  background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-strong);
-  cursor: grab; user-select: none;
+  background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-strong); user-select: none;
 }
 .clip.selected { box-shadow: inset 0 0 0 2px var(--ink); z-index: 3; }
-.clip:active { cursor: grabbing; }
+/* Ableton-style: the title strip is the handle that moves a clip, the
+   waveform below it is where you drag out a selection. */
+.clip-title { cursor: grab; }
+.clip-title:active { cursor: grabbing; }
+.clip-body { cursor: crosshair; }
 .clip-title {
   font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--ink); padding: 1px 5px; white-space: nowrap; overflow: hidden;
@@ -481,13 +556,6 @@ input[type="range"] { accent-color: var(--ink); }
 .i-btn.danger:hover { border-color: var(--hot); color: var(--hot); }
 
 /* studio toolbar extras */
-.tools { display: flex; gap: 2px; }
-.tool-btn {
-  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em;
-  background: var(--panel); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0;
-  padding: 0.35rem 0.6rem;
-}
-.tool-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .snap-ctl, .studio-field {
   display: flex; align-items: center; gap: 0.4rem;
   font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-ink);
@@ -511,7 +579,6 @@ input[type="range"] { accent-color: var(--ink); }
 .trim-handle.left { left: 0; }
 .trim-handle.right { right: 0; }
 .trim-handle:hover { background: rgba(0,0,0,0.18); }
-.clip.cut { cursor: crosshair; }
 
 /* loop band on the ruler */
 .loop-band { position: absolute; top: 0; bottom: 0; background: rgba(214,69,69,0.16); border-left: 1px solid var(--hot); border-right: 1px solid var(--hot); pointer-events: none; }
@@ -609,7 +676,6 @@ input[type="range"] { accent-color: var(--ink); }
 
 /* ===== Region: drag it out to split =================================== */
 
-.clip.selecting { cursor: crosshair; }
 .clip-region { cursor: grab; }
 .region-grip {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -812,8 +878,40 @@ input[type="range"] { accent-color: var(--ink); }
 .midi-warn { color: var(--hot); font-weight: 400; }
 
 /* Session picker */
-.session-actions { display: flex; gap: 4px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(0, 0, 0, .35); }
 .session-picker { width: min(520px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; padding: 20px; border: 1px solid var(--line-strong); background: var(--panel); }
 .session-row { display: flex; width: 100%; margin: 6px 0; padding: 10px; text-align: left; flex-direction: column; gap: 3px; }
 .session-row span { color: var(--muted-ink); font-size: .85em; }
+
+/* A picker row is "open this" plus a separate destructive action, so the row
+   is a flex pair rather than one giant button. */
+.session-entry { display: flex; align-items: stretch; gap: 6px; margin: 6px 0; }
+.session-entry .session-row { flex: 1; margin: 0; }
+.session-del {
+  flex: none;
+  padding: 0 0.8rem;
+  background: transparent;
+  color: var(--hot);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.62rem;
+  cursor: pointer;
+}
+.session-del:hover { background: #f1efe9; border-color: var(--hot); }
+
+/* The generate bar's mode picker: what to make, said rather than inferred. */
+.ask-mode {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.ask-mode:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -38,6 +38,9 @@ _load_dotenv()
 # Stable Audio 3 works at 44.1kHz stereo. We keep everything at this rate
 # so no stage of the pipeline has to resample.
 SAMPLE_RATE = 44100
+# auto uses Basic Pitch only when explicitly installed/configured; pYIN remains
+# the dependency-free fallback for offline and lightweight setups.
+PITCH_TRACKER = os.getenv("BTG_PITCH_TRACKER", "pyin").lower()
 
 # --- generation defaults -----------------------------------------------
 
@@ -70,7 +73,32 @@ MIN_USEFUL_NOISE = 0.6
 # and stayed inside it at 0.65.
 # Bass and drums tolerate more freedom because their guides constrain
 # rhythm and register more than exact pitch.
-PART_NOISE = {"harmony": 0.65, "free": 0.65}
+# How loud the already-generated stems sit under a new part's guide.
+# The guide has to stay dominant — it carries the notes the new part plays —
+# but the band underneath is what lets the model match their room and
+# balance instead of generating into a vacuum. Pushed much past this the
+# model starts re-rendering the whole mix rather than the one part.
+ENSEMBLE_LEVEL = 0.3
+
+# How many of the existing stems go into that bed. A session collects every
+# take a user tried, and mixing all of them in makes the context a mush of
+# unrelated ideas. The most recent few are the ones being worked on.
+ENSEMBLE_MAX_TRACKS = 4
+
+# Stable Audio's `strength` is how far the output is allowed to diverge from
+# the input audio, and 0.8 is their recommended starting point. That is tuned
+# for "here is a rough sketch, make it real" — but when the band is mixed into
+# the input as context, 0.8 transforms most of that context away too. Their
+# own guidance is to lower it when the output strays too far from the input,
+# so a part generated against the band follows it more closely than one
+# generated against a bare guide.
+ENSEMBLE_STRENGTH_DROP = 0.05
+ENSEMBLE_MIN_STRENGTH = 0.6
+
+# A full mix needs more freedom than a single stem: the guide is a crude
+# four-layer sketch, and holding the model to it too tightly renders the
+# sketch rather than a record.
+PART_NOISE = {"harmony": 0.65, "free": 0.65, "mix": 0.85}
 
 
 def default_noise(part: str) -> float:
@@ -84,7 +112,26 @@ DEFAULT_STEPS = 8
 DEFAULT_BACKEND = os.environ.get("BTG_DEFAULT_BACKEND", "mock")
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
-STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-3/audio-to-audio"
+# Stable Audio 3 lives on the *unversioned* `stable-audio` path. The
+# `stable-audio-2` path is a different, older service: its `model` field only
+# accepts 'stable-audio-2.5' | 'stable-audio-2', so pointing at it silently
+# generates with 2.5 no matter what the UI calls the backend.
+STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio/audio-to-audio"
+
+# The only value that endpoint accepts today, sent explicitly so a future
+# default flipping under us shows up as an error rather than a quiet downgrade.
+STABILITY_MODEL = "stable-audio-3"
+
+# Endpoint limits, for reference: duration <= 380s, steps <= 8, cfg_scale <= 25,
+# strength 0..1, seed >= 0, output_format 'wav' | 'mp3'.
+STABILITY_MAX_DURATION = 380
+
+# Stable Audio 3 is asynchronous: the generation call returns a job id and the
+# audio is collected from here. A bar or two of music comes back in seconds,
+# but the queue is shared, so the timeout is generous rather than tight.
+STABILITY_RESULTS_URL = "https://api.stability.ai/v2beta/results"
+STABILITY_POLL_INTERVAL = 2.0
+STABILITY_POLL_TIMEOUT = 300.0
 
 # --- chat agent --------------------------------------------------------
 
@@ -175,3 +222,22 @@ def ensure_dirs() -> None:
     """Create the directories the app writes to. Safe to call repeatedly."""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- master-first stem splitting ---------------------------------------
+
+# How far a stem may diverge from the master it is carved out of. Low on
+# purpose: the whole point is that every stem is the SAME performance with
+# the other instruments removed, so the model must keep the master's timing,
+# harmony and room and only re-render the balance. Raise it and the stems
+# drift back into being separate takes.
+SPLIT_STRENGTH = 0.6
+
+# The master itself diverges freely from its synthetic guide — the guide is
+# a crude sketch and the master is the record.
+MASTER_STRENGTH = 0.85
+
+# How far the per-stem refinement pass may drift from the separated stem it
+# re-renders. The separated stem is the right performance with separation
+# artifacts on it; refinement is SA3 re-recording that exact part cleanly.
+# Low, because the input is already the truth — only the timbre needs work.
+REFINE_STRENGTH = 0.35

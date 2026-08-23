@@ -20,10 +20,11 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 import soundfile as sf
+import pretty_midi
 
-from . import config, instruments, interpret, pipeline, sa3_backend
+from . import compose, config, hum_transform, instruments, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -66,6 +67,46 @@ class GenerateRequest(BaseModel):
     start_bar: int = 0  # chord-grid offset, for section regeneration
     name: str | None = None  # track name; several tracks may share a part
     instrument: str = ""  # replaces the part's default instrument description
+    # Shared recording character for the whole arrangement. None inherits
+    # whatever the session already agreed on.
+    production: str | None = None
+    # Position among the same-role tracks in this request, so the backend can
+    # have leads trade phrases instead of all soloing at once.
+    voice_index: int = 0
+    voice_count: int = 1
+    # Whether the stems already on the timeline are mixed under this one as
+    # context. None lets the backend decide from the request text.
+    ensemble: bool | None = None
+
+
+
+class HumGenerateRequest(BaseModel):
+    session_id: str
+    target: str | None = None  # melody | bass; inferred from prompt when omitted
+    prompt: str = ""
+    noise: float | None = None
+    backend: str | None = None
+    seed: int | None = None
+    name: str | None = None
+    faithful: bool = True
+    snap_to_key: bool = False
+    quantize: bool = False
+    quantize_division: int = 8
+    render_audio: bool = True
+
+
+class TransformHumRequest(BaseModel):
+    """Deterministic hum-to-MIDI request; deliberately has no SA3 fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    target: str  # melody | bass
+    name: str | None = None
+    faithful: bool = True
+    snap_to_key: bool = False
+    quantize: bool = False
+    quantize_division: int = Field(default=8, ge=1, le=32)
 
 
 class AnalysisEdit(BaseModel):
@@ -107,8 +148,68 @@ async def analyze(file: UploadFile) -> dict:
     finally:
         upload_path.unlink(missing_ok=True)
 
-    return {"session_id": session.id, "analysis": analysis.to_dict()}
+    return {
+        "session_id": session.id,
+        "analysis": analysis.to_dict(),
+        "pitch_tracking": session.to_dict().get("pitch_tracking", {}),
+    }
 
+
+@app.post("/api/transform-hum")
+def transform_hum(request: TransformHumRequest) -> dict:
+    """Turn a saved hum into editable MIDI without invoking any audio backend."""
+    if request.target not in ("melody", "bass"):
+        raise HTTPException(400, "target must be 'melody' or 'bass'")
+    session = _load(request.session_id)
+    name = pipeline.track_name(session, request.target, request.name)
+    options = hum_transform.TransformOptions(
+        faithful=request.faithful, snap_to_key=request.snap_to_key,
+        quantize=request.quantize, quantize_division=request.quantize_division,
+    )
+    try:
+        with _generation_for(session.id):
+            result = pipeline.transform_hum_to_midi(session, request.target, name, options)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {
+        "session_id": session.id, **result,
+        "midi_url": f"/api/session/{session.id}/midi/{result['name']}.mid",
+        "pitch_tracking": session.to_dict().get("pitch_tracking", {}).get("tracker_id", "unknown"),
+    }
+
+
+@app.post("/api/generate-from-hum")
+def generate_from_hum(request: HumGenerateRequest) -> dict:
+    """Deprecated compatibility route; hum transformation is now MIDI-only."""
+    target = request.target or interpret.hum_target(request.prompt)
+    return {
+        **transform_hum(TransformHumRequest(
+            session_id=request.session_id, target=target, name=request.name,
+            faithful=request.faithful, snap_to_key=request.snap_to_key,
+            quantize=request.quantize, quantize_division=request.quantize_division,
+        )),
+        "deprecated": "use /api/transform-hum; no Stable Audio render was requested",
+    }
+
+
+
+class RenameRequest(BaseModel):
+    name: str
+
+
+@app.patch("/api/session/{session_id}/name")
+def rename_session(session_id: str, request: RenameRequest) -> dict:
+    """Rename a session so the picker shows what the header shows.
+
+    Without this the rename lived only in the browser: the header said one
+    name and the Projects list said another, because the list is built from
+    the server's display_name.
+    """
+    session = _load(session_id)
+    name = request.name.strip()[:80]
+    if name:
+        session.set_display_name(name)
+    return {"display_name": name}
 
 @app.patch("/api/session/{session_id}/analysis")
 def update_analysis(session_id: str, edit: AnalysisEdit) -> dict:
@@ -169,6 +270,10 @@ def generate(request: GenerateRequest) -> dict:
                 start_bar=request.start_bar,
                 name=pipeline.track_name(session, request.part, request.name),
                 instrument=request.instrument,
+                production=request.production,
+                voice_index=request.voice_index,
+                voice_count=request.voice_count,
+                ensemble=request.ensemble,
             )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
@@ -182,9 +287,85 @@ def generate(request: GenerateRequest) -> dict:
     }
 
 
+
+class SongTrack(BaseModel):
+    part: str
+    name: str | None = None
+    instrument: str = ""
+    voice_index: int = 0
+    voice_count: int = 1
+
+
+class SongRequest(BaseModel):
+    session_id: str
+    tracks: list[SongTrack]
+    style: str | None = None
+    production: str | None = None
+    backend: str | None = None
+    seed: int | None = None
+    bars: int | None = None
+
+
+
+@app.get("/api/session/{session_id}/progress")
+def session_progress(session_id: str) -> dict:
+    """What a long-running generate-song is doing right now.
+
+    The song pipeline (master take, separation, per-stem work) runs minutes
+    on CPU inside one POST; the UI polls this so the wait reads as progress
+    rather than a hang. Empty string means nothing is running.
+    """
+    return {"status": pipeline.PROGRESS.get(session_id, "")}
+
+@app.post("/api/generate-song")
+def generate_song(request: SongRequest) -> dict:
+    """Generate a whole arrangement master-first and return it as stems.
+
+    One model call renders the full band, then each stem is carved out of
+    that master — so the stems are one performance split apart, not separate
+    takes stacked. This is the endpoint the prompt bar uses for multi-track
+    plans; single tracks still go through /api/generate.
+    """
+    for track in request.tracks:
+        if track.part not in PARTS:
+            raise HTTPException(400, f"unknown part: {track.part}")
+    if not request.tracks:
+        raise HTTPException(400, "no tracks requested")
+
+    session = _load(request.session_id)
+    try:
+        with _generation_for(session.id):
+            results = pipeline.generate_song(
+                session,
+                tracks=[t.model_dump() for t in request.tracks],
+                style=request.style,
+                production=request.production,
+                backend=request.backend,
+                seed=request.seed,
+                bars=request.bars,
+            )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        "stems": [
+            {
+                **result.to_dict(),
+                "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
+            }
+            for result in results
+        ]
+    }
+
 class InterpretRequest(BaseModel):
     text: str
     session_id: str | None = None
+    # What the user picked in the UI: "stems" (a track per instrument),
+    # "single" (the whole band in one track), or "midi" (editable notes).
+    # Explicit because phrasing does not settle it — "a drum backing track"
+    # is one stem to a musician and a whole arrangement to a model reading
+    # the word "track".
+    mode: str | None = None
 
 
 @app.post("/api/interpret")
@@ -216,8 +397,60 @@ def interpret_request(request: InterpretRequest) -> dict:
         except (FileNotFoundError, ValueError):
             context = None  # unanalyzed or missing session - no context to add
 
-    plan, source = interpret.interpret_with_source(request.text, context)
+    plan, source = interpret.interpret_with_source(request.text, context, request.mode)
     return {**plan.model_dump(), "interpreter": source}
+
+
+class ComposeMidiRequest(BaseModel):
+    text: str
+    session_id: str | None = None
+    # The client may already know the length it wants (a clip being replaced,
+    # or the arrangement's bar count); otherwise the composer picks.
+    bars: int | None = None
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    style: str | None = None
+
+
+@app.post("/api/compose-midi")
+def compose_midi(request: ComposeMidiRequest) -> dict:
+    """Write a MIDI phrase from a description.
+
+    Returns notes in beats, not audio: the client puts them on a MIDI track
+    and plays them through the sampler, so the result stays editable in the
+    piano roll instead of being baked into a wav.
+
+    Session settings seed the context, and anything passed explicitly on the
+    request wins over them — the Studio's tempo box is more current than the
+    tempo detected from the original vocal.
+    """
+    context = compose.Context(
+        bpm=request.bpm,
+        key=request.key,
+        mode=request.mode,
+        bars=request.bars,
+        style=request.style or "",
+    )
+    if request.session_id:
+        try:
+            session = Session.load(request.session_id)
+            analysis = session.analysis
+            arrangement = session.arrangement
+            context = compose.Context(
+                bpm=request.bpm or analysis.bpm,
+                key=request.key or analysis.key,
+                mode=request.mode or analysis.mode,
+                bars=request.bars or arrangement.bars,
+                style=request.style or arrangement.style or "",
+            )
+        except (FileNotFoundError, ValueError):
+            pass  # unanalyzed or missing session - the request's own values stand
+
+    phrase, source = compose.compose(request.text, context)
+    if not phrase.notes:
+        raise HTTPException(422, "the composer returned no notes - try describing the part differently")
+    return {**phrase.model_dump(), "composer": source}
 
 
 class SamplesRequest(BaseModel):
@@ -415,6 +648,16 @@ async def generate_from_reference(
     }
 
 
+def _hum_midi_notes(session: Session, name: str) -> list[dict]:
+    midi = pretty_midi.PrettyMIDI(str(session.midi_path(name)))
+    beat = session.analysis.seconds_per_beat
+    return [
+        {"pitch": note.pitch, "start": note.start / beat, "length": (note.end - note.start) / beat,
+         "velocity": note.velocity}
+        for instrument in midi.instruments for note in instrument.notes
+    ]
+
+
 def _safe_name(name: str) -> str:
     """Filesystem-safe stem name. These become paths, so no traversal."""
     cleaned = "".join(c for c in name if c.isalnum() or c in "-_") or "clip"
@@ -469,6 +712,17 @@ def get_audio(session_id: str, kind: str, filename: str) -> FileResponse:
         raise HTTPException(404, "not found")
 
     return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/session/{session_id}/midi/{filename}")
+def get_midi(session_id: str, filename: str) -> FileResponse:
+    if Path(filename).name != filename or not filename.endswith(".mid"):
+        raise HTTPException(404, "not found")
+    session = _load(session_id)
+    path = session.root / "midi" / filename
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="audio/midi")
 
 
 @app.get("/api/session/{session_id}/vocal.wav")
