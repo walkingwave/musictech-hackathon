@@ -496,6 +496,16 @@ export function useTimeline(sampler) {
     setPlaying(false);
   }, [stopNodes]);
 
+  const clear = useCallback(() => {
+    stop();
+    buffersRef.current = {};
+    pastRef.current = [];
+    futureRef.current = [];
+    setTracks([]);
+    setLoop(null);
+    bumpHistory();
+  }, [stop, setLoop]);
+
   const play = useCallback(
     (fromOffset) => {
       stopNodes();
@@ -618,6 +628,7 @@ export function useTimeline(sampler) {
     play,
     pause,
     stop,
+    clear,
     seek,
     loop,
     setLoop,

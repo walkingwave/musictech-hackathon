@@ -34,7 +34,7 @@ This is a diagnostic/test workflow. It validates whether preprocessing and analy
 Keep test output separate from generation sessions:
 
 ```text
-analysis-tests/<run-id>/
+backend/test/test_run/analysis_test_<timestamp>/
   cleaned.wav
   metadata.json
 ```
@@ -190,7 +190,7 @@ Add a dedicated command rather than overloading generation:
 
 ```bash
 uv run analysis-test --input samples/vocal.wav
-uv run analysis-test --input recording.webm --output analysis-tests/my-take
+uv run analysis-test --input recording.webm --output backend/test/test_run/my-take
 uv run analysis-test --input samples/beatbox.wav --mode beatbox
 ```
 
@@ -200,7 +200,7 @@ Suggested arguments:
 |---|---|
 | `--input PATH` | Required source recording unless using `--clean` |
 | `--output PATH` | Optional output directory; otherwise create a run directory |
-| `--clean` | Remove all prior run directories/files under `analysis-tests/` and exit |
+| `--clean` | Remove all prior generated run directories/files under `backend/test/test_run/` and exit |
 | `--mode auto\|voice\|beatbox` | Select preprocessing profile; begin with `auto` mapped to voice until routing exists |
 | `--no-trim` | Debug option to retain exterior silence |
 | `--no-high-pass` | Debug option to compare filtering impact |
@@ -210,7 +210,8 @@ Register the entry point in `pyproject.toml`, e.g.:
 
 ```toml
 [project.scripts]
-analysis-test = "backend.analysis_test_cli:main"
+analysis-test = "backend.test.analysis_test_cli:main"
+deepseek-test = "backend.test.deepseek_test_cli:main"
 ```
 
 ## Optional API/UI follow-up

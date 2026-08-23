@@ -14,7 +14,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = REPO_ROOT / "sessions"
-ANALYSIS_TESTS_DIR = REPO_ROOT / "analysis-tests"
 CACHE_DIR = REPO_ROOT / ".cache"
 FRONTEND_DIR = REPO_ROOT / "frontend"
 
@@ -96,6 +95,9 @@ DEEPSEEK_API_URL = os.environ.get(
     "https://api.deepseek.com/chat/completions",
 )
 BTG_AGENT_MODEL = os.environ.get("BTG_AGENT_MODEL", "deepseek-v4-flash")
+
+# PyTorch local-runtime model ID. The MLX runtime selects its own DiT below.
+TORCH_DIT = os.environ.get("BTG_TORCH_DIT", "small-music")
 
 # --- local MLX backend -------------------------------------------------
 

@@ -27,6 +27,8 @@ export default function App() {
   const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   // Studio tempo/key — auto-populated from analysis, editable in the studio
   // (works even with no upload, where they default and just drive the grid).
   const [studioBpm, setStudioBpm] = useState(120);
@@ -36,6 +38,13 @@ export default function App() {
   const sampler = useSampler();
   const engine = useTimeline(sampler);
   const library = useInstruments();
+  const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
+  const vocalAddedRef = useRef(false);
+
+  const flash = useCallback((message) => {
+    setToast(message);
+    window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
+  }, []);
 
   // MIDI notes are stored in beats, so playback needs the current tempo.
   useEffect(() => engine.setBpm(studioBpm), [engine, studioBpm]);
@@ -68,13 +77,77 @@ export default function App() {
       })();
     },
   });
-  const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
-  const vocalAddedRef = useRef(false);
-
-  const flash = useCallback((message) => {
-    setToast(message);
-    window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
+  const refreshSessions = useCallback(async () => {
+    const list = await apiClient.listSessions();
+    setSessions(list);
+    return list;
   }, []);
+
+  const closeProject = useCallback(() => {
+    engine.clear();
+    project.clear();
+    setSessionId(null);
+    setAnalysis(null);
+    setFileName(null);
+    setPrompt('');
+    setView('input');
+    vocalWavRef.current = null;
+    vocalAddedRef.current = false;
+    flash('Project closed — server files were kept');
+  }, [engine, project, flash]);
+
+  const loadProject = useCallback(async (id) => {
+    try {
+      const meta = await apiClient.getSession(id);
+      if (!meta.analysis) throw new Error('session has not been analyzed yet');
+      engine.clear();
+      project.clear();
+      setSessionId(id);
+      setAnalysis(meta.analysis);
+      setStudioBpm(meta.analysis.bpm);
+      setStudioKey(meta.analysis.key);
+      setStudioMode(meta.analysis.mode);
+      setFileName(meta.display_name || `Session ${id}`);
+      vocalWavRef.current = null;
+      vocalAddedRef.current = false;
+      for (const stem of Object.values(meta.stems || {})) {
+        const url = `/api/session/${id}/audio/stems/${encodeURIComponent(stem.name)}.wav?v=${stem.seed || ''}`;
+        const response = await fetch(url);
+        if (!response.ok) continue;
+        const buffer = await engine.context().decodeAudioData(await response.arrayBuffer());
+        engine.addTrackWithClip(stem.name, stem.part, buffer, {
+          start: 0, part: stem.part, prompt: stem.prompt, seed: stem.seed,
+          backendUsed: stem.backend_used, duration: stem.duration || buffer.duration, audioUrl: url,
+        });
+      }
+      setView('studio');
+      setSessionPickerOpen(false);
+      flash('Project loaded');
+    } catch (error) {
+      flash(`Could not load project — ${error.message}`);
+    }
+  }, [engine, project, flash]);
+
+  const deleteCurrentProject = useCallback(async () => {
+    if (!sessionId || !window.confirm(`Delete ${fileName || `session ${sessionId}`} permanently?`)) return;
+    try {
+      await apiClient.deleteSession(sessionId);
+      closeProject();
+      await refreshSessions();
+      flash('Project deleted');
+    } catch (error) {
+      flash(`Could not delete project — ${error.message}`);
+    }
+  }, [sessionId, fileName, closeProject, refreshSessions, flash]);
+
+  const openSessionPicker = useCallback(async () => {
+    try {
+      await refreshSessions();
+      setSessionPickerOpen(true);
+    } catch (error) {
+      flash(`Could not list projects — ${error.message}`);
+    }
+  }, [refreshSessions, flash]);
 
   const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
@@ -300,6 +373,11 @@ export default function App() {
         backends={backends}
         backend={backend}
         onBackend={selectBackend}
+        onOpenSession={openSessionPicker}
+        onCloseSession={closeProject}
+        onDeleteSession={deleteCurrentProject}
+        sessionActive={!!sessionId}
+        busy={generating}
       />
 
       {view === 'instrument' ? (
@@ -345,6 +423,18 @@ export default function App() {
         />
       )}
 
+      {sessionPickerOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="session-picker" role="dialog" aria-modal="true" aria-label="Open project">
+            <div className="row"><h2>Open project</h2><button onClick={() => setSessionPickerOpen(false)}>Close</button></div>
+            {!sessions.length ? <p>No saved projects.</p> : sessions.map((item) => (
+              <button className="session-row" key={item.id} onClick={() => loadProject(item.id)}>
+                <strong>{item.display_name}</strong><span>{item.analysis ? `${Math.round(item.analysis.bpm)} BPM · ${item.analysis.key} ${item.analysis.mode}` : 'Unanalyzed'} · {item.track_names.length} tracks</span>
+              </button>
+            ))}
+          </section>
+        </div>
+      )}
       {toast && <div className="toast">{toast}</div>}
     </>
   );

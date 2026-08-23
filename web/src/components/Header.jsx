@@ -10,6 +10,11 @@ export default function Header({
   backends = [],
   backend,
   onBackend,
+  onOpenSession,
+  onCloseSession,
+  onDeleteSession,
+  sessionActive = false,
+  busy = false,
 }) {
   const tabs = [
     { id: 'input', label: 'Input', enabled: true },
@@ -43,6 +48,11 @@ export default function Header({
           </select>
         </div>
       )}
+      <div className="session-actions">
+        <button className="tab" onClick={onOpenSession} disabled={busy}>Open</button>
+        <button className="tab" onClick={onCloseSession} disabled={!sessionActive || busy}>Close</button>
+        <button className="tab" onClick={onDeleteSession} disabled={!sessionActive || busy}>Delete</button>
+      </div>
       <nav className="tabs">
         {tabs.map((t) => (
           <button

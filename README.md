@@ -161,13 +161,13 @@ BPM, key, downbeat, chords, melody notes, and MIDI pitches:
 
 ```bash
 uv run analysis-test --input samples/fixtures/amin_100.wav
-uv run analysis-test --input samples/fixtures/amin_100.wav --output analysis-tests/amin-check
+uv run analysis-test --input samples/fixtures/amin_100.wav --output backend/test/test_run/amin-check
 uv run analysis-test --input samples/beatbox.wav --mode beatbox
-uv run analysis-test --clean  # remove previous analysis-test runs
+uv run analysis-test --clean  # remove prior generated test runs
 ```
 
 The default output directory is a sortable timestamp such as
-`analysis-tests/2026-08-22_16-43-09/`. The preprocessing is deliberately
+`backend/test/test_run/analysis_test_2026-08-22_16-43-09/`. The preprocessing is deliberately
 conservative: it removes DC, trims only outer silence, applies
 a content-aware high-pass filter, and normalizes with headroom. Use
 `--no-trim` or `--no-high-pass` when comparing their effect on analysis.
@@ -187,10 +187,52 @@ backend/
   pipeline.py      the only module that knows the stage order
   api.py           HTTP routes. Thin — musical logic lives in the stages.
   cli.py           headless runner
+  test/             developer validation CLIs and ignored test-run artifacts
 frontend/          plain HTML/CSS/JS, no build step
 scripts/           setup and test-fixture generation
 sessions/<id>/     vocal, guides, stems, MIDI, and a meta.json provenance record
 ```
+
+### DeepSeek validation
+
+Validate the complete analysis-to-DeepSeek planning path with an API key in `.env`:
+
+```bash
+uv run deepseek-test --input samples/fixtures/amin_100.wav \
+  --prompt "add upright bass, Rhodes, and soft bossa nova drums" \
+  --require-deepseek --expect-tracks
+```
+
+This writes a cleaned WAV, analysis metadata, redacted request/response plans, and
+`validation.json` under `backend/test/test_run/deepseek_test_<timestamp>/`. It sends
+only derived musical metadata and the request text to DeepSeek—never audio bytes,
+local paths, or credentials. Omit `--require-deepseek` to permit the offline rules
+fallback for a no-network smoke test.
+
+### Frontend interpretation-to-generation integration test
+
+With the backend running, exercise the same HTTP flow used by the Studio ask
+bar. The default `mock` backend reaches the generation adapter without loading
+SA3; use `--backend local` only for an intentional MLX SA3 smoke test.
+
+```bash
+uv run uvicorn backend.api:app --reload
+node frontend/test/interpret_generate_test.mjs --backend mock
+node frontend/test/interpret_generate_test.mjs --backend local --require-deepseek
+```
+
+Each invocation stores redacted request/response JSON and two validation
+results under `frontend/test/test_run/frontend_interpret_generate_test_<timestamp>/`.
+Run the dependency-free runner tests with `cd frontend/test && npm test`.
+
+### Sessions
+
+Projects persist under `sessions/`. Use the Studio header **Open** button to
+load a saved project, **Close** to clear it from this browser while retaining
+server files, and **Delete** to permanently remove it after confirmation.
+Deletion is rejected while that session is generating. Session list responses
+contain summaries only; audio remains available through the existing session
+audio routes.
 
 ### Adding a backing part
 

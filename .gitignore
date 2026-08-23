@@ -4,6 +4,8 @@ __pycache__/
 .env
 sessions/
 analysis-tests/
+backend/test/test_run/
+frontend/test/test_run/
 out/
 .cache/
 .DS_Store

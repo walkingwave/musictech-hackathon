@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -31,6 +33,23 @@ log = logging.getLogger(__name__)
 
 config.ensure_dirs()
 app = FastAPI(title="Backing Track Generator")
+
+_active_sessions: set[str] = set()
+_deleting_sessions: set[str] = set()
+_active_sessions_lock = threading.Lock()
+
+
+@contextmanager
+def _generation_for(session_id: str):
+    with _active_sessions_lock:
+        if session_id in _active_sessions or session_id in _deleting_sessions:
+            raise HTTPException(409, "generation is already active or the session is closing")
+        _active_sessions.add(session_id)
+    try:
+        yield
+    finally:
+        with _active_sessions_lock:
+            _active_sessions.discard(session_id)
 
 
 # --- request bodies -----------------------------------------------------
@@ -84,6 +103,7 @@ async def analyze(file: UploadFile) -> dict:
 
     try:
         session, analysis = pipeline.analyze_vocal(upload_path)
+        session.set_display_name(Path(file.filename or "Recording").stem)
     finally:
         upload_path.unlink(missing_ok=True)
 
@@ -137,18 +157,19 @@ def generate(request: GenerateRequest) -> dict:
 
     session = _load(request.session_id)
     try:
-        result = pipeline.generate_stem(
-            session,
-            part=request.part,
-            style=request.style,
-            noise=request.noise,
-            backend=request.backend,
-            seed=request.seed,
-            bars=request.bars,
-            start_bar=request.start_bar,
-            name=pipeline.track_name(session, request.part, request.name),
-            instrument=request.instrument,
-        )
+        with _generation_for(session.id):
+            result = pipeline.generate_stem(
+                session,
+                part=request.part,
+                style=request.style,
+                noise=request.noise,
+                backend=request.backend,
+                seed=request.seed,
+                bars=request.bars,
+                start_bar=request.start_bar,
+                name=pipeline.track_name(session, request.part, request.name),
+                instrument=request.instrument,
+            )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
@@ -293,16 +314,17 @@ def generate_from_midi(request: MidiRequest) -> dict:
         )
 
     try:
-        result = pipeline.generate_from_notes(
-            session,
-            notes=[n.model_dump() for n in request.notes],
-            prompt=request.prompt,
-            noise=request.noise,
-            backend=request.backend,
-            seed=request.seed,
-            name=pipeline.track_name(session, "free", request.name),
-            bars=request.bars,
-        )
+        with _generation_for(session.id):
+            result = pipeline.generate_from_notes(
+                session,
+                notes=[n.model_dump() for n in request.notes],
+                prompt=request.prompt,
+                noise=request.noise,
+                backend=request.backend,
+                seed=request.seed,
+                name=pipeline.track_name(session, "free", request.name),
+                bars=request.bars,
+            )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
@@ -374,15 +396,16 @@ async def generate_from_reference(
         reference = librosa.resample(reference, orig_sr=sr, target_sr=config.SAMPLE_RATE)
 
     try:
-        result = pipeline.generate_from_reference(
-            session,
-            reference=reference,
-            prompt=prompt,
-            noise=noise,
-            backend=backend,
-            seed=seed,
-            name=_safe_name(name),
-        )
+        with _generation_for(session.id):
+            result = pipeline.generate_from_reference(
+                session,
+                reference=reference,
+                prompt=prompt,
+                noise=noise,
+                backend=backend,
+                seed=seed,
+                name=_safe_name(name),
+            )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
@@ -398,9 +421,40 @@ def _safe_name(name: str) -> str:
     return cleaned[:40]
 
 
+@app.get("/api/sessions")
+def list_sessions() -> list[dict]:
+    """List bounded, safe summaries of persisted local sessions."""
+    summaries = []
+    for root in (config.SESSIONS_DIR.iterdir() if config.SESSIONS_DIR.exists() else ()):
+        if not root.is_dir() or root.is_symlink():
+            continue
+        try:
+            summaries.append(Session.load(root.name).summary())
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+    return sorted(summaries, key=lambda item: item["updated_at"] or "", reverse=True)[:100]
+
+
 @app.get("/api/session/{session_id}")
 def get_session(session_id: str) -> dict:
     return _load(session_id).to_dict()
+
+
+@app.delete("/api/session/{session_id}")
+def delete_session(session_id: str) -> dict:
+    session = _load(session_id)
+    with _active_sessions_lock:
+        if session.id in _active_sessions or session.id in _deleting_sessions:
+            raise HTTPException(409, "wait for generation to finish before deleting this session")
+        _deleting_sessions.add(session.id)
+    try:
+        session.delete()
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    finally:
+        with _active_sessions_lock:
+            _deleting_sessions.discard(session.id)
+    return {"deleted": session.id}
 
 
 @app.get("/api/session/{session_id}/audio/{kind}/{filename}")
