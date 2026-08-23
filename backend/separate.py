@@ -149,22 +149,24 @@ def separate(
     spectrogram, and the score-split uses them to divide the harmonic pool.
     """
     master = np.asarray(master, dtype=np.float32)
-    stems = remask(_run_model(MODEL_NAME, master), master)
+    stems = _run_model(MODEL_NAME, master)
 
-    evidence: dict[str, np.ndarray] = {}
-    if not want_evidence:
-        # No requested track maps to a witnessed source, so the second
-        # model pass would be a minute of CPU for nothing.
-        return stems, evidence
-    try:
-        witness = _run_model(WITNESS_MODEL, master)
-        for name in ("piano", "guitar"):
-            if name in witness:
-                evidence[name] = witness[name]
-    except Exception as error:  # noqa: BLE001 - evidence is optional
-        log.warning("witness model failed, splitting on scores alone: %s", error)
+    # The witness's piano and guitar buckets are used as PLAYABLE sources.
+    # An earlier iteration used them only as mask evidence and divided the
+    # harmonic pool by each part's synthetic score template — but the
+    # templates are saws at a fixed octave, and masking a saxophone by an
+    # octave-5 saw stripped its fundamental and left a chipmunked husk.
+    # Real separated audio, jointly remasked, keeps the timbre honest.
+    if want_evidence:
+        try:
+            witness = _run_model(WITNESS_MODEL, master)
+            for name in ("piano", "guitar"):
+                if name in witness:
+                    stems[name] = witness[name]
+        except Exception as error:  # noqa: BLE001 - the witness is optional
+            log.warning("witness model failed, continuing without it: %s", error)
 
-    return stems, evidence
+    return remask(stems, master), {}
 
 
 def source_for(part: str, instrument: str = "") -> str:
@@ -210,8 +212,8 @@ def _crossover_split(audio: np.ndarray, cuts: tuple[float, ...]) -> list[np.ndar
 # sources and routinely swap content — a quintet's piano stem arrived
 # carrying the guitar. Everything harmonic is pooled and divided by score
 # instead, where the templates know exactly whose note is whose.
-TRUSTED_SOURCES = ("drums", "bass", "vocals")
-HARMONIC_POOL = ("piano", "guitar", "other")
+TRUSTED_SOURCES = ("drums", "bass", "vocals", "piano", "guitar")
+HARMONIC_POOL = ("other",)
 
 
 def allocate(
@@ -264,23 +266,15 @@ def allocate(
         out[i] = (pool, f"pool:{requests[i][0]}")
         return [x for x in out if x is not None]
 
-    group_templates = [templates[i] if templates else None for i in pool_indexes]
-    if all(t is not None for t in group_templates):
-        # A pooled track whose instrument maps to a witnessed source gets
-        # that source's audio as timbre evidence alongside its score.
-        group_evidence = [
-            (evidence or {}).get(source_for(requests[i][0], requests[i][1]))
-            for i in pool_indexes
-        ]
-        slices = informed_split(pool, group_templates, group_evidence)
-        for i, piece in zip(pool_indexes, slices):
-            out[i] = (piece, f"pool:{requests[i][0]}-scored")
-    else:
-        ordered = sorted(pool_indexes, key=lambda i: _PART_REGISTER.get(requests[i][0], 3))
-        cuts = _CROSSOVERS.get(len(ordered), _CROSSOVERS[4])
-        bands = _crossover_split(pool, cuts[: len(ordered) - 1])
-        for band, i in zip(bands, ordered):
-            out[i] = (band, f"pool:{requests[i][0]}-band")
+    # Complementary crossovers only. Score-template masking was tried here
+    # and reverted: the templates are fixed-octave saws, and masking a real
+    # instrument by one ripped out its fundamental whenever the model played
+    # in a different register.
+    ordered = sorted(pool_indexes, key=lambda i: _PART_REGISTER.get(requests[i][0], 3))
+    cuts = _CROSSOVERS.get(len(ordered), _CROSSOVERS[4])
+    bands = _crossover_split(pool, cuts[: len(ordered) - 1])
+    for band, i in zip(bands, ordered):
+        out[i] = (band, f"pool:{requests[i][0]}-band")
     return [x for x in out if x is not None]
 
 

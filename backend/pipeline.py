@@ -859,11 +859,12 @@ def generate_song(
     # a request for four tracks of jazz came back deep-fried. "track", "song"
     # and "stems" describe the request, never the audio.
     lead = re.sub(
-        r"\d+\s*[- ]?\s*(different\s+|separate\s+|new\s+)?(tracks?|instruments?|stems?|parts?)",
+        r"\b\d+\s*[- ]?\s*(different\s+|separate\s+|new\s+)?(tracks?|instruments?|stems?|parts?)\b",
         "", lead, flags=re.IGNORECASE,
     )
     # "beat drop" is a sound and survives; a bare "beat" is a request noun.
-    lead = re.sub(r"(tracks?|songs?|stems?)|beats?(?!\s*drop)", "", lead, flags=re.IGNORECASE)
+    lead = re.sub(r"\b(tracks?|songs?|stems?)\b|\bbeats?\b(?!\s*drop)", "", lead, flags=re.IGNORECASE)
+    lead = re.sub(r"^(of|with|for)\s+", "", lead, flags=re.IGNORECASE)  # dangling connective after a strip
     lead = re.sub(r"\s*,\s*,+", ", ", lead)
     lead = re.sub(r"\s{2,}", " ", lead).strip(" ,")
     described = ", ".join(piece for piece in (lead, band) if piece)
