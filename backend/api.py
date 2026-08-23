@@ -15,12 +15,13 @@ import logging
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import soundfile as sf
 
-from . import config, pipeline, sa3_backend
+from . import config, instruments, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -38,10 +39,14 @@ app = FastAPI(title="Backing Track Generator")
 class GenerateRequest(BaseModel):
     session_id: str
     part: str
-    style: str = ""
+    style: str | None = None  # None -> inherit the session's arrangement
     noise: float | None = None  # None -> per-part default
     backend: str | None = None
     seed: int | None = None
+    bars: int | None = None  # target length in bars; None -> input vocal length
+    start_bar: int = 0  # chord-grid offset, for section regeneration
+    name: str | None = None  # track name; several tracks may share a part
+    instrument: str = ""  # replaces the part's default instrument description
 
 
 class AnalysisEdit(BaseModel):
@@ -139,14 +144,258 @@ def generate(request: GenerateRequest) -> dict:
             noise=request.noise,
             backend=request.backend,
             seed=request.seed,
+            bars=request.bars,
+            start_bar=request.start_bar,
+            name=pipeline.track_name(session, request.part, request.name),
+            instrument=request.instrument,
         )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
     return {
         **result.to_dict(),
-        "audio_url": f"/api/session/{session.id}/audio/stems/{request.part}.wav",
+        # Files are keyed by track name, not part, so two pitched tracks do
+        # not overwrite each other. The seed query busts the browser cache
+        # so a regenerate fetches fresh audio.
+        "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
     }
+
+
+class InterpretRequest(BaseModel):
+    text: str
+    session_id: str | None = None
+
+
+@app.post("/api/interpret")
+def interpret_request(request: InterpretRequest) -> dict:
+    """Turn a plain-English request into a generation plan.
+
+    When a session is given, its style, tempo, key and existing parts are
+    passed as context so a follow-up ("add a piano") extends the current
+    arrangement instead of starting a conflicting one.
+
+    Uses Claude when credentials are available and falls back to keyword
+    matching otherwise, so this endpoint always returns a usable plan
+    rather than failing when offline.
+    """
+    context = None
+    if request.session_id:
+        try:
+            session = Session.load(request.session_id)
+            analysis = session.analysis
+            arrangement = session.arrangement
+            context = interpret.Context(
+                style=arrangement.style,
+                bars=arrangement.bars,
+                bpm=analysis.bpm,
+                key=analysis.key,
+                mode=analysis.mode,
+                existing_parts=list(session.to_dict().get("stems", {})),
+            )
+        except (FileNotFoundError, ValueError):
+            context = None  # unanalyzed or missing session - no context to add
+
+    plan = interpret.interpret(request.text, context)
+    return {**plan.model_dump(), "interpreter": "claude" if interpret.claude_available() else "rules"}
+
+
+class SamplesRequest(BaseModel):
+    prompt: str
+    takes: int | None = None
+    backend: str | None = None
+    seed: int | None = None
+    force: bool = False
+
+
+@app.post("/api/instrument/samples")
+def instrument_samples(request: SamplesRequest) -> dict:
+    """Generate one sustained one-shot per pitch for an instrument.
+
+    The browser then plays MIDI through these, so the notes are exactly
+    what was played and editing needs no further generation. Results are
+    cached by prompt, so loading the same instrument again is free.
+    """
+    if not request.prompt.strip():
+        raise HTTPException(400, "an instrument needs a description")
+
+    try:
+        made = instruments.generate_samples(
+            request.prompt,
+            takes=max(1, min(6, request.takes or instruments.DEFAULT_TAKES)),
+            backend=request.backend,
+            seed=request.seed,
+            force=request.force,
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    ident = instruments.instrument_id(request.prompt)
+    return {
+        "instrument_id": ident,
+        # Takes are not asked to hit a pitch; each one lands where it
+        # lands and reports it, and the sampler transposes from there.
+        "samples": [
+            {
+                "actual_pitch": s["actual_pitch"],
+                "url": f"/api/instrument/{ident}/{s['index']}.wav",
+            }
+            for s in made
+        ],
+    }
+
+
+@app.get("/api/instrument/{ident}/{index}.wav")
+def instrument_sample(ident: str, index: int) -> FileResponse:
+    path = config.CACHE_DIR / "instruments" / ident / f"{index}.wav"
+    if not path.is_file():
+        raise HTTPException(404, "sample not found")
+    return FileResponse(path, media_type="audio/wav")
+
+
+class MidiNote(BaseModel):
+    pitch: int
+    start: float  # beats from the clip's start
+    length: float = 1.0  # beats
+    velocity: int = 90
+
+
+class MidiRequest(BaseModel):
+    session_id: str | None = None
+    notes: list[MidiNote]
+    prompt: str = ""
+    noise: float | None = None
+    backend: str | None = None
+    seed: int | None = None
+    name: str = "instrument"
+    bars: int | None = None
+    # Only used when no session exists yet, so the instrument view works
+    # before anything else has been recorded or generated.
+    bpm: float = 100.0
+    key: str = "A"
+    mode: str = "minor"
+
+
+@app.post("/api/generate-from-midi")
+def generate_from_midi(request: MidiRequest) -> dict:
+    """Turn played notes into a real instrument.
+
+    The notes become the guide track, so the performance is preserved
+    exactly while Stable Audio 3 supplies the sound described by `prompt`.
+    """
+    if not request.notes:
+        raise HTTPException(400, "no notes to generate from")
+
+    if request.session_id:
+        session = _load(request.session_id)
+    else:
+        session, _ = pipeline.create_blank_session(
+            bpm=request.bpm, key=request.key, mode=request.mode, bars=request.bars or 8
+        )
+
+    try:
+        result = pipeline.generate_from_notes(
+            session,
+            notes=[n.model_dump() for n in request.notes],
+            prompt=request.prompt,
+            noise=request.noise,
+            backend=request.backend,
+            seed=request.seed,
+            name=pipeline.track_name(session, "free", request.name),
+            bars=request.bars,
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        **result.to_dict(),
+        "session_id": session.id,
+        "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
+    }
+
+
+@app.get("/api/session/{session_id}/arrangement")
+def get_arrangement(session_id: str) -> dict:
+    """The style and length every part in this session shares."""
+    return _load(session_id).arrangement.to_dict()
+
+
+class BlankSessionRequest(BaseModel):
+    bpm: float = 100.0
+    key: str = "A"
+    mode: str = "minor"
+    bars: int = 8
+
+
+@app.post("/api/session/blank")
+def create_blank_session(request: BlankSessionRequest) -> dict:
+    """Start a session with no vocal, for composing from nothing.
+
+    Everything downstream keys off an Analysis, so writing to a project
+    without a recording just means supplying tempo, key and a starting
+    chord grid instead of inferring them.
+    """
+    if not 20 <= request.bpm <= 300:
+        raise HTTPException(400, "bpm must be between 20 and 300")
+    if request.mode not in ("major", "minor"):
+        raise HTTPException(400, "mode must be 'major' or 'minor'")
+    if not 1 <= request.bars <= 128:
+        raise HTTPException(400, "bars must be between 1 and 128")
+
+    session, analysis = pipeline.create_blank_session(
+        bpm=request.bpm, key=request.key, mode=request.mode, bars=request.bars
+    )
+    return {"session_id": session.id, "analysis": analysis.to_dict()}
+
+
+@app.post("/api/generate-from-reference")
+async def generate_from_reference(
+    session_id: str = Form(...),
+    prompt: str = Form(""),
+    noise: float = Form(config.DEFAULT_NOISE),
+    backend: str | None = Form(None),
+    seed: int | None = Form(None),
+    name: str = Form("clip"),
+    audio: UploadFile = File(...),
+) -> dict:
+    """Generate a clip guided by audio the user supplies, not a synthesized guide.
+
+    The studio posts the rendered audio of whichever track was chosen as the
+    reference. Same audio-to-audio mechanism as a normal stem — the reference
+    simply takes the place of the arranger's guide track.
+    """
+    session = _load(session_id)
+
+    reference, sr = sf.read(io.BytesIO(await audio.read()), dtype="float32")
+    if reference.ndim > 1:
+        reference = reference.mean(axis=1)
+    if sr != config.SAMPLE_RATE:
+        import librosa
+
+        reference = librosa.resample(reference, orig_sr=sr, target_sr=config.SAMPLE_RATE)
+
+    try:
+        result = pipeline.generate_from_reference(
+            session,
+            reference=reference,
+            prompt=prompt,
+            noise=noise,
+            backend=backend,
+            seed=seed,
+            name=_safe_name(name),
+        )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        **result.to_dict(),
+        "audio_url": f"/api/session/{session.id}/audio/stems/{_safe_name(name)}.wav",
+    }
+
+
+def _safe_name(name: str) -> str:
+    """Filesystem-safe stem name. These become paths, so no traversal."""
+    cleaned = "".join(c for c in name if c.isalnum() or c in "-_") or "clip"
+    return cleaned[:40]
 
 
 @app.get("/api/session/{session_id}")

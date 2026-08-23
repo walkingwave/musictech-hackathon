@@ -23,26 +23,38 @@ from .models import Analysis, Part
 INSTRUMENT_PHRASES: dict[Part, str] = {
     "bass": "warm fingered electric bass guitar, dry DI signal, clean low end",
     "piano": "acoustic grand piano chords, close-miked, natural room",
+    "guitar": "clean electric guitar chords, warm amp, light room",
     "drums": "tight acoustic drum kit, punchy kick and snare, dry room",
     "harmony": "warm choir pad, sustained aahs, soft attack, close-miked",
+    # `free` always carries a user-supplied instrument, so it needs no
+    # default of its own - and inventing one would compete with theirs.
+    "free": "",
 }
 
 # What must not appear in the stem. Everything except the target part.
 ISOLATION: dict[Part, str] = {
     "bass": "solo bass only, no drums, no vocals, no piano",
     "piano": "solo piano only, no drums, no vocals, no bass",
+    "guitar": "solo guitar only, no drums, no vocals, no bass",
     "drums": "drums only, no melody, no vocals, no bass",
     "harmony": "single sustained layer, no drums, no bass, no percussion",
+    "free": "solo instrument, one layer only, no drums, no vocals",
 }
 
 
-def build(part: Part, analysis: Analysis, style: str = "") -> str:
+def build(part: Part, analysis: Analysis, style: str = "", instrument: str = "") -> str:
     """Compose the full prompt for one part.
 
-    `style` is free text from the user, e.g. "bossa nova" or "gritty 70s funk".
+    `style` is free text about the music, e.g. "bossa nova" or "gritty 70s funk".
+
+    `instrument` **replaces** the default instrument phrase rather than
+    adding to it. That matters: asking for a wah bass while the default
+    still says "dry DI signal" hands the model two contradictory
+    descriptions of the same sound, and the default usually wins. When the
+    user names an instrument, it should be the only one described.
     """
     pieces = [
-        INSTRUMENT_PHRASES[part],
+        instrument.strip() or INSTRUMENT_PHRASES[part],
         style.strip(),
         f"{round(analysis.bpm)} BPM",
         f"{analysis.key} {analysis.mode}",

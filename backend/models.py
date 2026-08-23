@@ -12,8 +12,14 @@ from typing import Literal
 
 # The four backing parts we generate. Adding a part means: add it here,
 # add an arranger in arrange.py, and add a prompt template in prompts.py.
-Part = Literal["bass", "piano", "drums", "harmony"]
-PARTS: tuple[Part, ...] = ("bass", "piano", "drums", "harmony")
+Part = Literal["bass", "piano", "guitar", "drums", "harmony", "free"]
+PARTS: tuple[Part, ...] = ("bass", "piano", "guitar", "drums", "harmony", "free")
+
+# `free` is the role for "just generate what I asked for". Its guide is a
+# plain sustained chord bed, so the output inherits tempo, key and harmony
+# from the session but nothing about how the instrument should play. Use it
+# whenever the instrument is unknown: guessing a specific role imposes a
+# rhythm the user never asked for, which is worse than imposing none.
 
 
 @dataclass
@@ -82,16 +88,46 @@ class Analysis:
 
 
 @dataclass
+class Arrangement:
+    """Session-wide musical decisions that every part must share.
+
+    Without this, each generation re-derived its own groove from whatever
+    style text that one request happened to carry. Adding a piano to a
+    finished bossa arrangement re-derived "straight" from an empty style
+    and dropped a rock backbeat on top of it — the parts were generated
+    against different rhythmic grids, so they could not cohere no matter
+    how good each one sounded alone.
+
+    Tempo, key and chords live on the Analysis; this is everything else
+    the parts have to agree on.
+    """
+
+    style: str = ""  # genre and mood, e.g. "bossa nova"
+    bars: int | None = None  # length every part is generated at
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Arrangement":
+        return cls(**d) if d else cls()
+
+
+@dataclass
 class StemResult:
     """One generated backing stem, plus the provenance to reproduce it."""
 
     part: Part
+    name: str  # track name; unique within a session, and the file stem
+    instrument: str  # what the user asked to hear, "" for the part default
     wav_path: str
     midi_path: str
     backend_used: str  # may differ from the request, if fallback fired
     prompt: str
     noise: float
     seed: int
+    duration: float = 0.0  # length of the generated audio, seconds
+    n_bars: int = 0  # bars the stem spans (may exceed the input vocal)
 
     def to_dict(self) -> dict:
         return asdict(self)

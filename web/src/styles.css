@@ -342,3 +342,450 @@ input[type="range"] { accent-color: var(--ink); }
   font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
   font-size: 0.7rem; padding: 3rem 0;
 }
+
+/* ===== Studio — arrangement view (light, on-brand) ==================== */
+
+/* Column layout so the ask bar can pin to the bottom of the viewport and
+   the arrangement takes the remaining height. */
+.studio {
+  background: var(--bg); color: var(--ink);
+  min-height: calc(100vh - 47px);
+  display: flex; flex-direction: column;
+}
+.studio .arrangement { flex: 1 1 auto; }
+
+.studio-bar {
+  display: flex; align-items: center; gap: 1.25rem;
+  padding: 0.55rem 1.25rem; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.transport { display: flex; align-items: center; gap: 0.5rem; }
+.t-btn {
+  font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0;
+  background: var(--ink); color: #fff; border: 1px solid var(--ink); border-radius: 0;
+  padding: 0.3rem 0.75rem; text-transform: none;
+}
+.t-btn:hover:not(:disabled) { background: #000; }
+.t-time { font-family: var(--mono); font-size: 0.7rem; color: var(--muted-ink); letter-spacing: 0.04em; }
+.t-bpm { font-family: var(--mono); font-size: 0.64rem; color: var(--muted); letter-spacing: 0.08em; }
+.studio-status { font-family: var(--mono); font-size: 0.64rem; color: var(--hot); margin-left: auto; text-transform: uppercase; letter-spacing: 0.08em; }
+
+.rec-btn {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  font-family: var(--mono); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.1em;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.4rem 0.75rem;
+}
+.rec-btn:hover { border-color: var(--ink); }
+.rec-btn .rec-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--hot); }
+.rec-btn.on { background: var(--hot); color: #fff; border-color: var(--hot); }
+.rec-btn.on .rec-dot { background: #fff; }
+
+.arrangement { display: flex; align-items: flex-start; overflow: hidden; }
+.headers { flex: none; background: var(--panel); border-right: 1px solid var(--line); }
+.corner { border-bottom: 1px solid var(--line); background: #f1efe9; }
+.empty-h { padding: 1rem; font-family: var(--mono); font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.track-header {
+  display: flex; align-items: stretch;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.th-color { width: 5px; flex: none; }
+.th-body { flex: 1; padding: 0.45rem 0.6rem; display: flex; flex-direction: column; justify-content: space-between; min-width: 0; }
+.th-top { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
+.th-name { font-family: var(--mono); font-size: 0.7rem; color: var(--ink); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-x { background: none; border: none; color: var(--muted); font-size: 0.95rem; padding: 0 0.2rem; }
+.th-x:hover { color: var(--hot); }
+.th-controls { display: flex; align-items: center; gap: 0.35rem; }
+.th-btn {
+  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0;
+  background: var(--panel); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.14rem 0.42rem; text-transform: none;
+}
+.th-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.th-btn.solo.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.th-vol { width: 62px; accent-color: var(--ink); }
+
+.lanes-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; }
+
+.ruler { position: relative; background: #f1efe9; border-bottom: 1px solid var(--line); cursor: pointer; }
+.bar-mark { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); }
+.bar-mark span { position: absolute; left: 3px; top: 4px; font-family: var(--mono); font-size: 0.58rem; color: var(--muted); }
+
+.lanes { background: #faf9f5; }
+.lane { position: relative; border-bottom: 1px solid var(--line); background: #fbfaf7; }
+.lane:nth-child(even) { background-color: #f6f4ef; }
+
+.clip {
+  position: absolute; top: 3px; border-radius: 0; overflow: hidden;
+  background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-strong);
+  cursor: grab; user-select: none;
+}
+.clip.selected { box-shadow: inset 0 0 0 2px var(--ink); z-index: 3; }
+.clip:active { cursor: grabbing; }
+.clip-title {
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink); padding: 1px 5px; white-space: nowrap; overflow: hidden;
+}
+.clip-region {
+  position: absolute; top: 0; bottom: 0; background: rgba(214,69,69,0.14);
+  border-left: 1px solid var(--hot); border-right: 1px solid var(--hot); pointer-events: none;
+}
+
+.playhead-line { position: absolute; top: 0; width: 1px; background: var(--hot); pointer-events: none; z-index: 5; }
+
+.inspector {
+  position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+  padding: 0.8rem 1.25rem; display: grid; gap: 0.6rem;
+}
+.insp-title { display: flex; align-items: center; gap: 0.5rem; font-family: var(--mono); font-size: 0.72rem; color: var(--ink); text-transform: uppercase; letter-spacing: 0.08em; }
+.insp-title .dot { width: 10px; height: 10px; border-radius: 2px; }
+.insp-meta { font-size: 0.6rem; color: var(--muted); letter-spacing: 0.04em; }
+.insp-row { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.insp-prompt {
+  flex: 1; min-width: 14rem; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.45rem 0.6rem; font: 0.85rem var(--sans);
+}
+.insp-prompt:focus { outline: none; border-color: var(--ink); }
+.insp-field { display: flex; align-items: center; gap: 0.4rem; font-family: var(--mono); font-size: 0.6rem; color: var(--muted-ink); text-transform: uppercase; letter-spacing: 0.06em; }
+.insp-field b { color: var(--ink); }
+.insp-field input[type=range] { width: 90px; accent-color: var(--ink); }
+.insp-bars { width: 3.5rem; background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 0; padding: 0.28rem 0.4rem; font: 0.8rem var(--mono); }
+.insp-note { font-family: var(--mono); font-size: 0.64rem; color: var(--muted); }
+.i-btn {
+  font-family: var(--mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 0; padding: 0.45rem 0.8rem;
+}
+.i-btn:hover:not(:disabled) { border-color: var(--ink); }
+.i-btn.accent { background: var(--ink); color: #fff; border-color: var(--ink); }
+.i-btn.danger:hover { border-color: var(--hot); color: var(--hot); }
+
+/* studio toolbar extras */
+.tools { display: flex; gap: 2px; }
+.tool-btn {
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em;
+  background: var(--panel); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.35rem 0.6rem;
+}
+.tool-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.snap-ctl, .studio-field {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-ink);
+}
+.snap-ctl select, .studio-field select, .studio-field input {
+  font-family: var(--mono); font-size: 0.68rem; border: 1px solid var(--line-strong); border-radius: 0;
+  background: var(--panel); color: var(--ink); padding: 0.25rem 0.4rem;
+}
+.studio-field input { width: 4.2rem; }
+.zoom-ctl { display: flex; gap: 2px; }
+.t-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.import-btn {
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.1em;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 0;
+  padding: 0.4rem 0.7rem; cursor: pointer;
+}
+.import-btn:hover { border-color: var(--ink); }
+
+/* clip trim handles + tool cursors */
+.trim-handle { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 4; }
+.trim-handle.left { left: 0; }
+.trim-handle.right { right: 0; }
+.trim-handle:hover { background: rgba(0,0,0,0.18); }
+.clip.cut { cursor: crosshair; }
+
+/* loop band on the ruler */
+.loop-band { position: absolute; top: 0; bottom: 0; background: rgba(214,69,69,0.16); border-left: 1px solid var(--hot); border-right: 1px solid var(--hot); pointer-events: none; }
+
+.studio-empty {
+  padding: 3rem 1.5rem; text-align: center;
+  font-family: var(--mono); font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em;
+}
+
+/* ===== Studio toolbar groups ========================================== */
+/* The bar was one long undifferentiated row. Grouping with hairline
+   separators lets the eye jump to transport / history / edit / add
+   instead of reading the whole thing left to right. */
+
+.studio-bar { gap: 0.85rem; flex-wrap: wrap; }
+.bar-group { display: flex; align-items: center; gap: 0.5rem; }
+.bar-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0.1rem 0; }
+.bar-spacer { flex: 1 1 auto; }
+.t-dim { color: var(--muted); }
+
+/* ===== Add track menu ================================================= */
+
+.add-menu { position: relative; }
+.add-btn { background: var(--panel); color: var(--ink); border-color: var(--line-strong); }
+.add-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--ink); }
+
+.menu-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  min-width: 232px; display: grid; gap: 2px;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.10); padding: 4px;
+}
+.menu-pop > button, .menu-file {
+  text-align: left; font-size: 0.78rem; padding: 0.5rem 0.6rem;
+  background: transparent; color: var(--ink); border: none; cursor: pointer;
+  /* The file item is a <label>, not a <button>, so it does not inherit the
+     global button typography — match it by hand or it reads out of place. */
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em;
+}
+.menu-pop > button:hover:not(:disabled), .menu-file:hover { background: var(--badge); }
+.menu-pop > button:disabled { color: var(--muted); cursor: not-allowed; }
+
+.ai-form { padding: 0.7rem; gap: 0.55rem; min-width: 288px; }
+.ai-form label {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--muted-ink);
+}
+.ai-form select, .ai-form input[type="text"], .ai-form input:not([type]) {
+  font: inherit; font-size: 0.78rem; text-transform: none; letter-spacing: 0;
+  color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.28rem 0.4rem; flex: 1;
+}
+.ai-form textarea {
+  font: inherit; font-size: 0.78rem; resize: vertical; width: 100%;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.4rem;
+}
+.ai-form .ai-noise { justify-content: flex-start; }
+.ai-form .ai-noise input[type="range"] { flex: 1; }
+.ai-actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
+.ai-actions button {
+  font-family: var(--mono); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 0.35rem 0.7rem; border: 1px solid var(--line-strong);
+  background: var(--panel); color: var(--ink); border-radius: 0;
+}
+.ai-actions .accent { background: var(--ink); color: #fff; border-color: var(--ink); }
+.ai-actions button:disabled { opacity: 0.45; }
+
+/* ===== Agentic request bar ============================================ */
+
+.askbar {
+  position: sticky; bottom: 0; z-index: 30;
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.65rem 1.25rem; background: var(--panel);
+  border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.05);
+}
+.ask-input {
+  flex: 1; font: inherit; font-size: 0.85rem;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.45rem 0.6rem;
+}
+.ask-input:focus { outline: none; border-color: var(--ink); }
+.ask-go {
+  font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.09em;
+  background: var(--ink); color: #fff; border: 1px solid var(--ink);
+  border-radius: 0; padding: 0.45rem 0.9rem;
+}
+.ask-go:disabled { opacity: 0.4; }
+.ask-plan {
+  font-family: var(--mono); font-size: 0.62rem; color: var(--muted-ink);
+  letter-spacing: 0.05em; min-width: 12rem;
+}
+
+/* ===== Region: drag it out to split =================================== */
+
+.clip.selecting { cursor: crosshair; }
+.clip-region { cursor: grab; }
+.region-grip {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 22px; height: 3px; background: var(--hot);
+  box-shadow: 0 -5px 0 var(--hot), 0 5px 0 var(--hot); opacity: 0.75;
+}
+
+/* ===== Instrument view — play it, then describe it =================== */
+
+.instrument { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem; display: grid; gap: 1.25rem; }
+
+.midi-row { gap: 0.6rem; }
+.midi-status {
+  font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.06em;
+  color: var(--muted-ink); margin-left: auto;
+}
+
+/* Piano roll: key labels in a fixed gutter, scrollable grid beside it. */
+.roll {
+  display: flex; border: 1px solid var(--line-strong); background: var(--bg);
+  margin-top: 0.75rem; overflow: hidden;
+}
+.roll-keys {
+  position: relative; width: 42px; flex: none;
+  border-right: 1px solid var(--line-strong); background: var(--panel);
+}
+.roll-keys span {
+  position: absolute; right: 5px;
+  font-family: var(--mono); font-size: 0.56rem; color: var(--muted);
+  line-height: 12px;
+}
+.roll-grid { flex: 1; min-width: 0; overflow: hidden; }
+
+.preset-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.6rem; }
+.preset {
+  font-size: 0.72rem; padding: 0.28rem 0.6rem;
+  background: var(--badge); color: var(--muted-ink);
+  border: 1px solid transparent; border-radius: 0;
+}
+.preset:hover { border-color: var(--ink); color: var(--ink); }
+
+/* The flex .row rule is scoped to .field, so the instrument form needs its
+   own — without it the prompt, name and button stack in a column. */
+.instrument form.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.instrument .insp-prompt { flex: 1; min-width: 16rem; }
+.instrument .studio-field input { width: 9rem; font-size: 0.85rem; font-weight: 400; }
+
+/* ===== MIDI editor — docked piano roll in the studio ================== */
+
+.midi-editor {
+  position: sticky; bottom: 0; z-index: 20;
+  background: var(--panel); border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.05);
+  max-height: 44vh; overflow-y: auto;
+}
+.midi-bar {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 1.25rem; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+}
+.midi-title {
+  font-family: var(--mono); font-size: 0.64rem; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--muted-ink); min-width: 5rem;
+}
+.midi-prompt {
+  flex: 1; min-width: 14rem; font: inherit; font-size: 0.82rem;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.35rem 0.5rem;
+}
+.midi-prompt:focus { outline: none; border-color: var(--ink); }
+.midi-devices {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
+  color: var(--muted); margin-left: auto;
+}
+.t-btn.rec { background: var(--hot); border-color: var(--hot); }
+.midi-editor .roll { margin: 0; border: none; border-top: 1px solid var(--line); }
+
+/* Instrument list on the New Instrument tab */
+.instrument-list { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.instrument-row {
+  display: grid; grid-template-columns: 9rem 1fr 5rem; gap: 0.75rem;
+  align-items: center; padding: 0.5rem 0.7rem; background: var(--panel); font-size: 0.82rem;
+}
+.instrument-name { font-weight: 600; }
+.instrument-prompt { color: var(--muted-ink); }
+.instrument-notes {
+  font-family: var(--mono); font-size: 0.62rem; color: var(--muted); text-align: right;
+}
+
+/* ===== Instrument slot — the device slot on a MIDI track ============== */
+
+.slot { position: relative; }
+.slot-btn {
+  width: 100%; text-align: left;
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg); color: var(--muted);
+  border: 1px dashed var(--line-strong); border-radius: 0;
+  padding: 0.2rem 0.4rem;
+}
+.slot-btn.loaded {
+  background: var(--ink); color: #fff; border-style: solid; border-color: var(--ink);
+}
+.slot.compact .slot-btn { font-size: 0.55rem; padding: 0.15rem 0.35rem; }
+.slot:not(.compact) .slot-btn { width: auto; min-width: 9rem; font-size: 0.66rem; padding: 0.32rem 0.6rem; }
+
+/* Positioned in JS (see InstrumentSlot): fixed to the viewport so it is
+   not clipped by the track header or the arrangement's overflow, with the
+   coordinates supplied inline. Only appearance lives here. */
+.slot-pop {
+  z-index: 200;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+.slot-pop-list { overflow-y: auto; display: grid; gap: 1px; min-height: 0; }
+.slot-pop-head {
+  font-family: var(--mono); font-size: 0.56rem; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--muted); padding: 0.3rem 0.45rem;
+}
+.slot-pop button {
+  display: grid; gap: 1px; text-align: left; padding: 0.4rem 0.45rem;
+  background: transparent; border: none; border-radius: 0; cursor: pointer;
+}
+.slot-pop button:hover { background: var(--badge); }
+.slot-pop button.on { background: var(--badge); }
+.slot-name { font-size: 0.78rem; color: var(--ink); }
+.slot-desc {
+  font-size: 0.66rem; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.slot-clear { border-top: 1px solid var(--line) !important; color: var(--hot) !important; font-size: 0.72rem; flex: none; }
+.slot-empty { font-size: 0.72rem; color: var(--muted); padding: 0.5rem 0.45rem; }
+
+.instrument-x {
+  background: transparent; border: none; color: var(--muted);
+  font-size: 1rem; line-height: 1; cursor: pointer; justify-self: end;
+}
+.instrument-x:hover { color: var(--hot); }
+
+/* A MIDI header carries a third row (the slot) in the same lane height,
+   so its rows sit tighter than an audio track's two. */
+.track-header .th-body { gap: 2px; }
+.track-header .slot.compact { margin: 1px 0; }
+
+/* ===== Piano roll ===================================================== */
+
+.roll { display: grid; background: var(--bg); border: 1px solid var(--line-strong); }
+.roll-gutter {
+  width: 42px; flex: none; border-right: 1px solid var(--line-strong);
+  background: var(--panel);
+  font-family: var(--mono); font-size: 0.55rem; color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+.roll-ruler-row { display: flex; border-bottom: 1px solid var(--line-strong); }
+.roll-ruler {
+  position: relative; flex: 1; background: var(--panel); cursor: ew-resize;
+}
+.roll-ruler span {
+  position: absolute; top: 3px; padding-left: 3px;
+  font-family: var(--mono); font-size: 0.58rem; color: var(--muted-ink);
+  border-left: 1px solid var(--line-strong); height: 14px;
+}
+.roll-ruler .roll-head {
+  border: none; padding: 0; top: 0; width: 1.5px; height: 100%;
+  background: var(--hot);
+}
+
+.roll-scroll { overflow-y: auto; overflow-x: hidden; }
+.roll-body { display: flex; }
+.roll-keys { position: relative; width: 42px; flex: none;
+  border-right: 1px solid var(--line-strong); background: var(--panel); }
+.roll-keys span {
+  position: absolute; right: 5px;
+  font-family: var(--mono); font-size: 0.55rem; color: var(--muted); line-height: 11px;
+}
+.roll-grid { flex: 1; min-width: 0; cursor: crosshair; }
+
+.roll-vel-row { display: flex; border-top: 1px solid var(--line-strong); }
+.roll-vel-row canvas { flex: 1; min-width: 0; cursor: ns-resize; }
+
+.midi-pos {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--muted-ink);
+  min-width: 2.4rem; text-align: center;
+}
+.midi-bars {
+  width: 3.2rem; font: inherit; font-size: 0.78rem;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0.2rem 0.3rem;
+}
+.midi-check {
+  display: flex; align-items: center; gap: 0.3rem;
+  font-family: var(--mono); font-size: 0.6rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted-ink);
+}
+.midi-editor { max-height: 52vh; }
+.midi-warn { color: var(--hot); font-weight: 400; }

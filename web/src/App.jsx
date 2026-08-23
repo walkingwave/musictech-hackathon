@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as apiClient from './api.js';
 import { blobToWav } from './wav.js';
-import { useMultitrack } from './useMultitrack.js';
+import { useTimeline } from './useTimeline.js';
+import { useInstruments } from './useInstruments.js';
+import { useSampler } from './useSampler.js';
+import { useProject } from './useProject.js';
 import Header from './components/Header.jsx';
 import InputView from './components/InputView.jsx';
-import TracksView from './components/TracksView.jsx';
+import Studio from './components/Studio.jsx';
+import InstrumentView from './components/InstrumentView.jsx';
+
+const PART_LABEL = { bass: 'Bass', drums: 'Drums', piano: 'Piano', harmony: 'Harmony' };
 
 export default function App() {
   const [view, setView] = useState('input');
   const [backends, setBackends] = useState([]);
   const [backend, setBackend] = useState(() => {
-    // Default to the local model. 'mock' was an earlier default; drop it so
-    // stale storage does not keep the app on the placeholder backend.
     const stored = localStorage.getItem('backend');
     return stored && stored !== 'mock' ? stored : 'local';
   });
@@ -20,29 +24,65 @@ export default function App() {
   const [fileName, setFileName] = useState(null);
   const [prompt, setPrompt] = useState('');
   const [selected, setSelected] = useState(() => new Set(['bass', 'drums', 'piano', 'harmony']));
-  const [stems, setStems] = useState({}); // part -> result
-  const [busyPart, setBusyPart] = useState(null);
+  const [bars, setBars] = useState(16); // target backing length
   const [generating, setGenerating] = useState(false);
   const [toast, setToast] = useState(null);
+  // Studio tempo/key — auto-populated from analysis, editable in the studio
+  // (works even with no upload, where they default and just drive the grid).
+  const [studioBpm, setStudioBpm] = useState(120);
+  const [studioKey, setStudioKey] = useState('C');
+  const [studioMode, setStudioMode] = useState('major');
 
-  const engine = useMultitrack();
+  const sampler = useSampler();
+  const engine = useTimeline(sampler);
+  const library = useInstruments();
+
+  // MIDI notes are stored in beats, so playback needs the current tempo.
+  useEffect(() => engine.setBpm(studioBpm), [engine, studioBpm]);
+
+  // Reload used to start from nothing. The project now restores itself:
+  // metadata from localStorage, audio re-fetched from the backend, which
+  // still holds every stem.
+  const project = useProject({
+    engine,
+    sessionId,
+    setSessionId,
+    studio: {
+      bpm: studioBpm, key: studioKey, mode: studioMode,
+      setBpm: setStudioBpm, setKey: setStudioKey, setMode: setStudioMode,
+    },
+    onRestored: (saved) => {
+      if (saved.tracks?.length) setView('studio');
+      flash('Project restored');
+      // Re-load every restored track's instrument, or the MIDI parts come
+      // back visible but silent until each slot is manually reloaded.
+      // Sequential: generated instruments contend for the local model.
+      (async () => {
+        const seen = new Set();
+        for (const t of saved.tracks || []) {
+          const inst = t.kind === 'midi' && t.instrument;
+          if (!inst || seen.has(inst.id)) continue;
+          seen.add(inst.id);
+          await sampler.load(inst, { backend }).catch(() => {});
+        }
+      })();
+    },
+  });
+  const vocalWavRef = useRef(null); // the analyzed vocal as a WAV blob
+  const vocalAddedRef = useRef(false);
 
   const flash = useCallback((message) => {
     setToast(message);
     window.setTimeout(() => setToast((c) => (c === message ? null : c)), 4000);
   }, []);
 
-  // The server forgets a session if it restarts. Rather than surface a raw
-  // 404, drop back to the input view and ask for a fresh recording.
-  const isLostSession = (error) =>
-    /404|no such session/i.test(error.message || '');
-
+  const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
     setSessionId(null);
     setAnalysis(null);
     setFileName(null);
-    setStems({});
     setView('input');
+    vocalAddedRef.current = false;
     flash('Session expired — record or upload again');
   }, [flash]);
 
@@ -75,16 +115,17 @@ export default function App() {
   const submitVocal = async (blob, filename) => {
     flash('Analyzing…');
     try {
-      // Re-encode to WAV in the browser — the backend has no ffmpeg and
-      // libsndfile cannot read the recorder's webm/opus.
       const wav = await blobToWav(blob);
       const wavName = filename.replace(/\.[^.]+$/, '') + '.wav';
       const result = await apiClient.analyze(wav, wavName);
       setSessionId(result.session_id);
       setAnalysis(result.analysis);
+      setStudioBpm(result.analysis.bpm);
+      setStudioKey(result.analysis.key);
+      setStudioMode(result.analysis.mode);
       setFileName(wavName);
-      setStems({});
-      engine.loadBuffer('vocal', apiClient.vocalUrl(result.session_id));
+      vocalWavRef.current = wav;
+      vocalAddedRef.current = false;
       flash('Analyzed — set your prompt and generate');
     } catch (error) {
       setFileName(null);
@@ -92,51 +133,74 @@ export default function App() {
     }
   };
 
-  // Generate one stem, loading it into the mixer. Shared by the initial
-  // batch and per-stem regenerate.
-  const generateOne = async (part, opts = {}) => {
-    setBusyPart(part);
-    try {
+  // One network generate. Returns the raw result; never touches timeline state
+  // so it can be reused for the initial batch, clip regen, and section regen.
+  // Composing without a recording still needs a session, since every stage
+  // keys off an Analysis. Make a blank one on first use.
+  const ensureSession = useCallback(async () => {
+    if (sessionId) return sessionId;
+    const result = await apiClient.createBlankSession({
+      bpm: studioBpm,
+      key: studioKey,
+      mode: studioMode,
+      bars,
+    });
+    setSessionId(result.session_id);
+    setAnalysis(result.analysis);
+    return result.session_id;
+  }, [sessionId, studioBpm, studioKey, studioMode, bars]);
+
+  const generateStem = useCallback(
+    async (opts) => {
+      const id = sessionId || (await ensureSession());
       const result = await apiClient.generate({
-        session_id: sessionId,
-        part,
-        // Per-track regenerate can override the prompt and divergence.
+        session_id: id,
+        part: opts.part,
         style: opts.style != null ? opts.style : prompt,
         noise: opts.noise,
+        bars: opts.bars,
+        start_bar: opts.start_bar,
+        name: opts.name,
+        instrument: opts.instrument,
         backend,
         seed: opts.seed,
       });
-      setStems((prev) => ({ ...prev, [part]: result }));
-      if (result.backend_used !== backend) {
-        flash(`${backend} unavailable — used ${result.backend_used}`);
-      }
-      await engine.loadBuffer(part, result.audio_url);
-      return true;
-    } catch (error) {
-      if (isLostSession(error)) {
-        resetSession();
-        return false;
-      }
-      flash(`${part} failed — ${error.message}`);
-      return true;
-    } finally {
-      setBusyPart(null);
-    }
-  };
+      return result;
+    },
+    [sessionId, prompt, backend, ensureSession],
+  );
+
+  const ensureVocalTrack = useCallback(async () => {
+    if (vocalAddedRef.current || !vocalWavRef.current) return;
+    const buffer = await engine.context().decodeAudioData(await vocalWavRef.current.arrayBuffer());
+    engine.addTrackWithClip('Vocal', 'vocal', buffer, { start: 0, part: 'vocal' });
+    vocalAddedRef.current = true;
+  }, [engine]);
 
   const generate = async (analysisEdit) => {
     setGenerating(true);
     try {
-      const updated = await apiClient.updateAnalysis(sessionId, analysisEdit);
-      setAnalysis(updated);
-      // Generate selected stems in sequence — the local backend is single
-      // model, so parallel calls would just contend. Stop early if the
-      // session was lost mid-batch.
+      await apiClient.updateAnalysis(sessionId, analysisEdit);
+      await ensureVocalTrack();
+      // Sequential — the local model is single-instance, parallel calls
+      // would just contend for it.
       for (const part of selected) {
-        const ok = await generateOne(part);
-        if (!ok) return;
+        const result = await generateStem({ part, style: prompt, bars });
+        const buffer = await engine
+          .context()
+          .decodeAudioData(await (await fetch(result.audio_url)).arrayBuffer());
+        engine.addTrackWithClip(PART_LABEL[part] || part, part, buffer, {
+          start: 0,
+          part,
+          prompt,
+          seed: result.seed,
+          backendUsed: result.backend_used,
+          duration: result.duration || buffer.duration,
+          startBar: 0,
+          audioUrl: result.audio_url,
+        });
       }
-      setView('tracks');
+      setView('studio');
     } catch (error) {
       if (isLostSession(error)) resetSession();
       else flash(`Could not generate — ${error.message}`);
@@ -145,16 +209,103 @@ export default function App() {
     }
   };
 
+  // Generate guided by an existing track's audio rather than a synthesized
+  // guide. Creates a blank session first if the user never uploaded a vocal.
+  const studioGenerateFromReference = useCallback(
+    async (opts) => {
+      const id = sessionId || (await ensureSession());
+      try {
+        return await apiClient.generateFromReference({
+          sessionId: id,
+          referenceWav: opts.referenceWav,
+          prompt: opts.prompt,
+          noise: opts.noise,
+          backend,
+          seed: opts.seed,
+          name: opts.name,
+        });
+      } catch (error) {
+        if (isLostSession(error)) resetSession();
+        throw error;
+      }
+    },
+    [sessionId, backend, resetSession, ensureSession],
+  );
+
+  // Render a MIDI clip's notes with its instrument prompt. Creates the
+  // session if this is the first thing the user does, so the instrument
+  // flow works as a starting point and not only as an addition.
+  const renderMidi = useCallback(
+    async ({ notes, prompt, name, bars: clipBars }) => {
+      const result = await apiClient.generateFromMidi({
+        session_id: sessionId,
+        notes,
+        prompt,
+        name,
+        bars: clipBars,
+        backend,
+        bpm: studioBpm,
+        key: studioKey,
+        mode: studioMode,
+      });
+      if (!sessionId) setSessionId(result.session_id);
+      return result;
+    },
+    [sessionId, backend, studioBpm, studioKey, studioMode],
+  );
+
+  // Adding an instrument to the library also gives you somewhere to play
+  // it: a MIDI track with that instrument already in its slot. The slot is
+  // swappable afterwards, so this is a shortcut, not a binding.
+  const createInstrument = useCallback(
+    ({ name, prompt }) => {
+      const instrument = library.create({ name, prompt });
+      const secondsPerBar = (60 / (studioBpm || 100)) * 4;
+      engine.addMidiTrack(instrument.name, instrument, {
+        start: 0,
+        duration: secondsPerBar * 4,
+        durationBeats: 16,
+        notes: [],
+      });
+      setView('studio');
+      // Start fetching the sound immediately — the track arrives playable
+      // instead of waiting for the slot to be reopened and reloaded.
+      sampler
+        .load(instrument, { backend })
+        .catch((error) => flash(`Could not load ${instrument.name} — ${error.message}`));
+    },
+    [engine, library, studioBpm, sampler, backend, flash],
+  );
+
+  // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
+  const studioGenerate = useCallback(
+    async (opts) => {
+      try {
+        return await generateStem(opts);
+      } catch (error) {
+        if (isLostSession(error)) resetSession();
+        throw error;
+      }
+    },
+    [generateStem, resetSession],
+  );
+
   return (
     <>
       <Header
         view={view}
         onView={setView}
         sessionName={fileName || 'Untitled'}
-        tracksReady={Object.keys(stems).length > 0}
+        tracksReady={engine.tracks.length > 0}
       />
 
-      {view === 'input' ? (
+      {view === 'instrument' ? (
+        <InstrumentView
+          onCreate={createInstrument}
+          onRemove={library.remove}
+          instruments={library.instruments}
+        />
+      ) : view === 'input' ? (
         <InputView
           analysis={analysis}
           fileName={fileName}
@@ -165,22 +316,29 @@ export default function App() {
           onPrompt={setPrompt}
           selected={selected}
           onToggleStem={toggleStem}
+          bars={bars}
+          onBars={setBars}
           onSubmitVocal={submitVocal}
           onGenerate={generate}
           generating={generating}
         />
       ) : (
-        <TracksView
+        <Studio
           engine={engine}
-          stems={stems}
-          onRegenerate={(part, opts) =>
-            generateOne(part, { ...opts, seed: Math.floor(Math.random() * 1e9) })
-          }
-          busyPart={busyPart}
-          defaultPrompt={prompt}
-          stemUrl={(part) => apiClient.stemUrl(sessionId, part)}
-          vocalUrl={sessionId ? apiClient.vocalUrl(sessionId) : null}
-          exportHref={sessionId ? apiClient.exportUrl(sessionId) : null}
+          bpm={studioBpm}
+          keyName={studioKey}
+          mode={studioMode}
+          detected={!!analysis}
+          onBpm={setStudioBpm}
+          onKey={setStudioKey}
+          onMode={setStudioMode}
+          onGenerateStem={studioGenerate}
+          onGenerateFromReference={studioGenerateFromReference}
+          onRenderMidi={renderMidi}
+          sessionId={sessionId}
+          instruments={library.instruments}
+          sampler={sampler}
+          backend={backend}
         />
       )}
 

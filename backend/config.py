@@ -47,12 +47,14 @@ MIN_USEFUL_NOISE = 0.6
 # Per-part overrides. Parts differ in how much freedom they can take
 # before they stop matching the guide.
 #
-# Harmony is the fragile one: it follows the vocal's own melody, so
-# wandering off the guide is immediately audible as wrong notes. At 0.80
-# it came back with pitch classes outside the key; at 0.65 it stayed in.
+# Harmony and `free` are the fragile ones. Both ride sustained guides -
+# a held vocal line, a held chord bed - and sustained material anchors the
+# model far more weakly than a plucked or struck one. Measured against an
+# A minor guide, both came back with pitch classes outside the key at 0.80
+# and stayed inside it at 0.65.
 # Bass and drums tolerate more freedom because their guides constrain
 # rhythm and register more than exact pitch.
-PART_NOISE = {"harmony": 0.65}
+PART_NOISE = {"harmony": 0.65, "free": 0.65}
 
 
 def default_noise(part: str) -> float:

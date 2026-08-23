@@ -35,6 +35,45 @@ export const updateAnalysis = (sessionId, edit) =>
 
 export const generate = (body) => postJSON('/generate', body);
 
+// Start a session with no source audio, for composing from nothing.
+export const createBlankSession = (body) => postJSON('/session/blank', body);
+
+// Interpret a plain-English request into a generation plan. The server uses
+// Claude when it has credentials and falls back to keyword matching, so this
+// always returns a plan rather than failing.
+// Played notes + a prompt -> a real instrument. The notes become the guide
+// track, so the performance survives and only the timbre is generated.
+export const generateFromMidi = (body) => postJSON('/generate-from-midi', body);
+
+// One-shot samples for an instrument. Cached server-side by prompt, so
+// loading the same instrument again costs nothing.
+export const instrumentSamples = (body) => postJSON('/instrument/samples', body);
+
+export const interpret = (text, sessionId) =>
+  postJSON('/interpret', { text, session_id: sessionId ?? null });
+
+// Generate a clip guided by audio the user picked, rather than by a guide
+// track synthesized from the chord grid. `referenceWav` is a Blob.
+export async function generateFromReference({
+  sessionId,
+  referenceWav,
+  prompt,
+  noise,
+  backend,
+  seed,
+  name,
+}) {
+  const form = new FormData();
+  form.append('session_id', sessionId);
+  form.append('prompt', prompt ?? '');
+  if (noise != null) form.append('noise', String(noise));
+  if (backend) form.append('backend', backend);
+  if (seed != null) form.append('seed', String(seed));
+  form.append('name', name || 'clip');
+  form.append('audio', referenceWav, 'reference.wav');
+  return api('/generate-from-reference', { method: 'POST', body: form });
+}
+
 export const vocalUrl = (sessionId) => `/api/session/${sessionId}/vocal.wav`;
 export const stemUrl = (sessionId, part) =>
   `/api/session/${sessionId}/audio/stems/${part}.wav`;

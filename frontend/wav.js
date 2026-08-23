@@ -1,31 +1,22 @@
-// Convert any browser-decodable audio blob (webm/opus from MediaRecorder,
-// mp3, m4a, wav) into a 16-bit PCM WAV. The backend decodes with libsndfile,
-// which has no webm/opus support and there is no ffmpeg on the host — doing
-// the decode here with the Web Audio API sidesteps both.
+/*
+ * Convert any browser-decodable audio blob into a 16-bit PCM WAV.
+ *
+ * Why this exists: MediaRecorder hands back WebM/Opus (Chrome) or MP4/AAC
+ * (Safari), and the backend reads uploads with libsndfile, which supports
+ * neither container. Recording therefore failed at the analyze step while
+ * uploading a .wav worked fine. Decoding here with the Web Audio API —
+ * which handles every format the browser can play — sidesteps both that
+ * and the need for ffmpeg on the host.
+ */
 
-export async function blobToWav(blob) {
+async function blobToWav(blob) {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
-  ctx.close();
-  return encodeWav(decoded);
-}
-
-// Encode a decoded AudioBuffer (or a region of one) to a WAV Blob, for
-// per-clip download straight from what is loaded in the timeline.
-export function audioBufferToWav(buffer, offsetSec = 0, durationSec = null) {
-  if (offsetSec === 0 && durationSec == null) return encodeWav(buffer);
-  const sr = buffer.sampleRate;
-  const startFrame = Math.floor(offsetSec * sr);
-  const frames = durationSec == null ? buffer.length - startFrame : Math.floor(durationSec * sr);
-  const region = new AudioBuffer({
-    numberOfChannels: buffer.numberOfChannels,
-    length: frames,
-    sampleRate: sr,
-  });
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    region.copyToChannel(buffer.getChannelData(c).subarray(startFrame, startFrame + frames), c);
+  try {
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    return encodeWav(decoded);
+  } finally {
+    ctx.close();
   }
-  return encodeWav(region);
 }
 
 function encodeWav(buffer) {
@@ -48,8 +39,8 @@ function encodeWav(buffer) {
   out.setUint32(4, 36 + dataSize, true);
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
-  out.setUint32(16, 16, true); // PCM chunk size
-  out.setUint16(20, 1, true); // format = PCM
+  out.setUint32(16, 16, true);   // PCM chunk size
+  out.setUint16(20, 1, true);    // format = PCM
   out.setUint16(22, numChannels, true);
   out.setUint32(24, sampleRate, true);
   out.setUint32(28, sampleRate * blockAlign, true);
