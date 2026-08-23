@@ -104,6 +104,14 @@ class Arrangement:
 
     style: str = ""  # genre and mood, e.g. "bossa nova"
     bars: int | None = None  # length every part is generated at
+    # The recording, not the music: room, mics, era, tape, mix character.
+    # Every part gets this appended, which is what stops four separately
+    # generated stems from sounding like four different records.
+    production: str = ""
+    # One seed shared by every part of the arrangement. Stable Audio 3 is a
+    # fresh instance per call, so the seed is the only continuity we can
+    # hand it — same seed, same corner of the latent space, closer timbres.
+    tone_seed: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -126,6 +134,9 @@ class StemResult:
     prompt: str
     noise: float
     seed: int
+    # A default-valued field must follow the required ones. None means the
+    # requested backend ran; a string is why it did not and what took over.
+    fallback_error: str | None = None
     duration: float = 0.0  # length of the generated audio, seconds
     n_bars: int = 0  # bars the stem spans (may exceed the input vocal)
 

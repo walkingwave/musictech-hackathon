@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import soundfile as sf
 
-from . import config, instruments, interpret, pipeline, sa3_backend
+from . import compose, config, instruments, interpret, pipeline, sa3_backend
 from .analysis import rebuild_bar_grid
 from .models import PARTS
 from .session import Session
@@ -66,6 +66,9 @@ class GenerateRequest(BaseModel):
     start_bar: int = 0  # chord-grid offset, for section regeneration
     name: str | None = None  # track name; several tracks may share a part
     instrument: str = ""  # replaces the part's default instrument description
+    # Shared recording character for the whole arrangement. None inherits
+    # whatever the session already agreed on.
+    production: str | None = None
 
 
 class AnalysisEdit(BaseModel):
@@ -169,6 +172,7 @@ def generate(request: GenerateRequest) -> dict:
                 start_bar=request.start_bar,
                 name=pipeline.track_name(session, request.part, request.name),
                 instrument=request.instrument,
+                production=request.production,
             )
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
@@ -218,6 +222,58 @@ def interpret_request(request: InterpretRequest) -> dict:
 
     plan, source = interpret.interpret_with_source(request.text, context)
     return {**plan.model_dump(), "interpreter": source}
+
+
+class ComposeMidiRequest(BaseModel):
+    text: str
+    session_id: str | None = None
+    # The client may already know the length it wants (a clip being replaced,
+    # or the arrangement's bar count); otherwise the composer picks.
+    bars: int | None = None
+    bpm: float | None = None
+    key: str | None = None
+    mode: str | None = None
+    style: str | None = None
+
+
+@app.post("/api/compose-midi")
+def compose_midi(request: ComposeMidiRequest) -> dict:
+    """Write a MIDI phrase from a description.
+
+    Returns notes in beats, not audio: the client puts them on a MIDI track
+    and plays them through the sampler, so the result stays editable in the
+    piano roll instead of being baked into a wav.
+
+    Session settings seed the context, and anything passed explicitly on the
+    request wins over them — the Studio's tempo box is more current than the
+    tempo detected from the original vocal.
+    """
+    context = compose.Context(
+        bpm=request.bpm,
+        key=request.key,
+        mode=request.mode,
+        bars=request.bars,
+        style=request.style or "",
+    )
+    if request.session_id:
+        try:
+            session = Session.load(request.session_id)
+            analysis = session.analysis
+            arrangement = session.arrangement
+            context = compose.Context(
+                bpm=request.bpm or analysis.bpm,
+                key=request.key or analysis.key,
+                mode=request.mode or analysis.mode,
+                bars=request.bars or arrangement.bars,
+                style=request.style or arrangement.style or "",
+            )
+        except (FileNotFoundError, ValueError):
+            pass  # unanalyzed or missing session - the request's own values stand
+
+    phrase, source = compose.compose(request.text, context)
+    if not phrase.notes:
+        raise HTTPException(422, "the composer returned no notes - try describing the part differently")
+    return {**phrase.model_dump(), "composer": source}
 
 
 class SamplesRequest(BaseModel):

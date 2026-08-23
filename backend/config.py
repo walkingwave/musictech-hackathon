@@ -84,7 +84,7 @@ DEFAULT_STEPS = 8
 DEFAULT_BACKEND = os.environ.get("BTG_DEFAULT_BACKEND", "mock")
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
-STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-3/audio-to-audio"
+STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-2/audio-to-audio"
 
 # --- chat agent --------------------------------------------------------
 

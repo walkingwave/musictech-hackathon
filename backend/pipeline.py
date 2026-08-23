@@ -86,12 +86,19 @@ def _resolve_arrangement(
     style: str | None,
     bars: int | None,
     analysis: Analysis,
-) -> tuple[str, int]:
-    """Settle the style and length this part must share with the others.
+    production: str | None = None,
+    seed: int | None = None,
+) -> tuple[str, int, str, int]:
+    """Settle what this part must share with the others.
 
     Inherit whatever the session already agreed on; anything passed
     explicitly wins and is written back, so a later change of mind moves
     the whole arrangement instead of leaving one part out of step.
+
+    Returns (style, bars, production, tone_seed). The last two are the
+    cohesion levers: the same recording description and the same seed on
+    every part, so four separate model calls sound like one session rather
+    than four unrelated records that happen to share a key.
     """
     arrangement = session.arrangement
     changed = False
@@ -110,14 +117,28 @@ def _resolve_arrangement(
         arrangement.bars = bars
         changed = True
 
+    if production is None:
+        production = arrangement.production
+    elif production != arrangement.production:
+        arrangement.production = production
+        changed = True
+
+    # The first part to be generated fixes the seed for everything after it.
+    # A caller that passes its own seed (regenerating one clip, hunting for a
+    # better take) is asking for variation, so it does not re-pin the shared
+    # one.
+    if arrangement.tone_seed is None:
+        arrangement.tone_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+        changed = True
+
     if changed:
         session.save_arrangement(arrangement)
         log.info(
-            "arrangement: style=%r groove=%s bars=%d",
-            style, grooves.for_style(style).name, bars,
+            "arrangement: style=%r groove=%s bars=%d production=%r",
+            style, grooves.for_style(style).name, bars, production,
         )
 
-    return style, bars
+    return style, bars, production, arrangement.tone_seed
 
 
 def track_name(session: Session, part: Part, requested: str | None) -> str:
@@ -150,6 +171,7 @@ def generate_stem(
     start_bar: int = 0,
     name: str | None = None,
     instrument: str = "",
+    production: str | None = None,
 ) -> StemResult:
     """Stages 2-5 for one part: arrange, render a guide, generate, align.
 
@@ -167,10 +189,15 @@ def generate_stem(
     """
     analysis = session.analysis
     vocal, sr = session.read_vocal()
-    seed = seed if seed is not None else random.randint(0, 2**31 - 1)
     noise = noise if noise is not None else config.default_noise(part)
 
-    style, bars = _resolve_arrangement(session, style, bars, analysis)
+    style, bars, production, tone_seed = _resolve_arrangement(
+        session, style, bars, analysis, production, seed
+    )
+    # No seed given means "another part of the same record", so it reuses the
+    # arrangement seed rather than rolling a fresh one and drifting away from
+    # the parts already generated.
+    seed = seed if seed is not None else tone_seed
     name = name or part
 
     # A longer target length (or a section offset) works over a tiled copy of
@@ -187,10 +214,10 @@ def generate_stem(
     session.write_audio(session.guide_path(name), guide)
 
     # Stage 4: hand the guide to Stable Audio 3.
-    prompt = prompts.build(part, work, style, instrument)
+    prompt = prompts.build(part, work, style, instrument, production)
     log.info("generating %s [%s] seed=%d bars=%d", name, prompt, seed, len(work.bars))
 
-    raw, backend_used = sa3_backend.generate_with_fallback(
+    raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
         backend_id=backend,
         prompt=prompt,
         init_audio=guide,
@@ -210,6 +237,7 @@ def generate_stem(
         wav_path=str(session.stem_path(name).relative_to(session.root)),
         midi_path=str(midi_path.relative_to(session.root)),
         backend_used=backend_used,
+        fallback_error=fallback_error,
         prompt=prompt,
         noise=noise,
         seed=seed,
@@ -324,7 +352,7 @@ def generate_from_reference(
     )
     log.info("generating from reference [%s] seed=%d", full_prompt, seed)
 
-    raw, backend_used = sa3_backend.generate_with_fallback(
+    raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
         backend_id=backend,
         prompt=full_prompt,
         init_audio=reference,
@@ -344,6 +372,7 @@ def generate_from_reference(
         wav_path=str(path.relative_to(session.root)),
         midi_path="",
         backend_used=backend_used,
+        fallback_error=fallback_error,
         prompt=full_prompt,
         noise=noise,
         seed=seed,
@@ -419,7 +448,7 @@ def generate_from_notes(
     )
     log.info("generating from %d played notes [%s] seed=%d", len(notes), full_prompt, seed)
 
-    raw, backend_used = sa3_backend.generate_with_fallback(
+    raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
         backend_id=backend,
         prompt=full_prompt,
         init_audio=guide,
@@ -438,6 +467,7 @@ def generate_from_notes(
         wav_path=str(session.stem_path(name).relative_to(session.root)),
         midi_path=str(midi_path.relative_to(session.root)),
         backend_used=backend_used,
+        fallback_error=fallback_error,
         prompt=full_prompt,
         noise=noise,
         seed=seed,

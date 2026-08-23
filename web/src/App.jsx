@@ -88,18 +88,24 @@ export default function App() {
 
   // The server quietly falls back to a working backend when the chosen one
   // can't run (e.g. `local` picked but Hugging Face access not granted yet).
-  // Silent fallback looks like "the model sounds wrong" — so say what ran.
+  // Silent fallback looks like "the model sounds wrong" — so say what ran and,
+  // when the server told us, the actual error (HTTP status included).
   const warnOnFallback = useCallback(
     (result) => {
       const used = result?.backend_used;
       if (used && backend && used !== backend) {
-        flash(`"${backend}" couldn't run — generated with "${used}" instead`);
+        const why = result?.fallback_error;
+        flash(why
+          ? `${why} — generated with "${used}" instead`
+          : `"${backend}" couldn't run — generated with "${used}" instead`);
       }
     },
     [backend, flash],
   );
 
-  const closeProject = useCallback(() => {
+  // Wipe the editor back to an empty project. Server-side files are kept —
+  // both "close" and "new" are local operations; only Delete touches the disk.
+  const clearProject = useCallback(() => {
     engine.clear();
     project.clear();
     setSessionId(null);
@@ -109,8 +115,17 @@ export default function App() {
     setView('input');
     vocalWavRef.current = null;
     vocalAddedRef.current = false;
+  }, [engine, project]);
+
+  const closeProject = useCallback(() => {
+    clearProject();
     flash('Project closed — server files were kept');
-  }, [engine, project, flash]);
+  }, [clearProject, flash]);
+
+  const newProject = useCallback(() => {
+    clearProject();
+    flash('New project — record or upload to start');
+  }, [clearProject, flash]);
 
   const loadProject = useCallback(async (id) => {
     try {
@@ -144,17 +159,24 @@ export default function App() {
     }
   }, [engine, project, flash]);
 
-  const deleteCurrentProject = useCallback(async () => {
-    if (!sessionId || !window.confirm(`Delete ${fileName || `session ${sessionId}`} permanently?`)) return;
+  // Deleting the project you have open also has to clear it out of the editor;
+  // deleting some other project from the picker must leave the open one alone.
+  const deleteProject = useCallback(async (id, name) => {
+    if (!id || !window.confirm(`Delete ${name || `session ${id}`} permanently?`)) return;
     try {
-      await apiClient.deleteSession(sessionId);
-      closeProject();
+      await apiClient.deleteSession(id);
+      if (id === sessionId) closeProject();
       await refreshSessions();
       flash('Project deleted');
     } catch (error) {
       flash(`Could not delete project — ${error.message}`);
     }
-  }, [sessionId, fileName, closeProject, refreshSessions, flash]);
+  }, [sessionId, closeProject, refreshSessions, flash]);
+
+  const deleteCurrentProject = useCallback(
+    () => deleteProject(sessionId, fileName),
+    [deleteProject, sessionId, fileName],
+  );
 
   const openSessionPicker = useCallback(async () => {
     try {
@@ -285,6 +307,7 @@ export default function App() {
         start_bar: opts.start_bar,
         name: opts.name,
         instrument: opts.instrument,
+        production: opts.production,
         backend,
         seed: opts.seed,
       });
@@ -402,6 +425,69 @@ export default function App() {
     [engine, library, studioBpm, sampler, backend, flash],
   );
 
+  // The agent answers with tempo, key and mode as part of the brief ("a slow
+  // sad song" is not 120 BPM in C major). Applying them has to be BOTH: the
+  // Studio boxes so the user sees what changed, and the session's analysis so
+  // the guide tracks and prompts of everything generated afterwards use them.
+  // Setting only the local state left the fields showing one tempo while the
+  // backend kept generating at another.
+  const applyMusicalSettings = useCallback(
+    async ({ bpm, key, mode }) => {
+      if (bpm) setStudioBpm(bpm);
+      if (key) setStudioKey(key);
+      if (mode) setStudioMode(mode);
+      if (!sessionId || (!bpm && !key && !mode)) return;
+      try {
+        const updated = await apiClient.updateAnalysis(sessionId, {
+          bpm: bpm ?? null,
+          key: key ?? null,
+          mode: mode ?? null,
+        });
+        setAnalysis(updated);
+      } catch (error) {
+        flash(`Tempo and key were not saved — ${error.message}`);
+      }
+    },
+    [sessionId, flash],
+  );
+
+  // Words -> notes. The agent writes a phrase, it lands on a MIDI track with
+  // a matching instrument already in the slot, and it stays editable in the
+  // piano roll — the point of MIDI over a rendered stem.
+  const composeMidiTrack = useCallback(
+    async ({ text, bars, style }) => {
+      const phrase = await apiClient.composeMidi({
+        text,
+        session_id: sessionId,
+        bars,
+        // The Studio's boxes are more current than whatever was detected from
+        // the original vocal, so they win over the session's own analysis.
+        bpm: studioBpm,
+        key: studioKey,
+        mode: studioMode,
+        style,
+      });
+      const instrument = library.create({
+        name: phrase.name,
+        prompt: phrase.instrument,
+      });
+      const beats = Math.max(1, (phrase.bars || 4) * 4);
+      const secondsPerBeat = 60 / (studioBpm || 100);
+      engine.addMidiTrack(phrase.name, instrument, {
+        start: 0,
+        duration: beats * secondsPerBeat,
+        durationBeats: beats,
+        notes: phrase.notes,
+      });
+      // Fetch the sound straight away, or the notes arrive visible but silent.
+      sampler
+        .load(instrument, { backend })
+        .catch((error) => flash(`Could not load ${instrument.name} — ${error.message}`));
+      return phrase;
+    },
+    [sessionId, studioBpm, studioKey, studioMode, library, engine, sampler, backend, flash],
+  );
+
   // Passed to the studio for clip / section regenerate. Surfaces lost sessions.
   const studioGenerate = useCallback(
     async (opts) => {
@@ -429,6 +515,7 @@ export default function App() {
         backends={backends}
         backend={backend}
         onBackend={selectBackend}
+        onNewProject={newProject}
         onOpenSession={openSessionPicker}
         onCloseSession={closeProject}
         onDeleteSession={deleteCurrentProject}
@@ -470,6 +557,8 @@ export default function App() {
           onKey={setStudioKey}
           onMode={setStudioMode}
           onGenerateStem={studioGenerate}
+          onComposeMidi={composeMidiTrack}
+          onApplySettings={applyMusicalSettings}
           onGenerateFromReference={studioGenerateFromReference}
           onRenderMidi={renderMidi}
           sessionId={sessionId}
@@ -482,11 +571,21 @@ export default function App() {
       {sessionPickerOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="session-picker" role="dialog" aria-modal="true" aria-label="Open project">
-            <div className="row"><h2>Open project</h2><button onClick={() => setSessionPickerOpen(false)}>Close</button></div>
+            <div className="row"><h2>Projects</h2><button onClick={() => setSessionPickerOpen(false)}>Close</button></div>
             {!sessions.length ? <p>No saved projects.</p> : sessions.map((item) => (
-              <button className="session-row" key={item.id} onClick={() => loadProject(item.id)}>
-                <strong>{item.display_name}</strong><span>{item.analysis ? `${Math.round(item.analysis.bpm)} BPM · ${item.analysis.key} ${item.analysis.mode}` : 'Unanalyzed'} · {item.track_names.length} tracks</span>
-              </button>
+              <div className="session-entry" key={item.id}>
+                <button className="session-row" onClick={() => loadProject(item.id)}>
+                  <strong>{item.display_name}</strong><span>{item.analysis ? `${Math.round(item.analysis.bpm)} BPM · ${item.analysis.key} ${item.analysis.mode}` : 'Unanalyzed'} · {item.track_names.length} tracks</span>
+                </button>
+                <button
+                  className="session-del"
+                  title={`Delete ${item.display_name}`}
+                  aria-label={`Delete ${item.display_name}`}
+                  onClick={() => deleteProject(item.id, item.display_name)}
+                >
+                  Delete
+                </button>
+              </div>
             ))}
           </section>
         </div>

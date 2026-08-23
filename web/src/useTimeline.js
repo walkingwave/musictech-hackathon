@@ -451,29 +451,46 @@ export function useTimeline(sampler) {
     [beginGesture],
   );
 
-  const setTrackProp = useCallback((trackId, prop, value) => {
-    setTracks((prev) => prev.map((t) => (t.id === trackId ? { ...t, [prop]: value } : t)));
-    // Live-apply volume/mute/solo during playback.
-    if (prop === 'volume') {
-      const g = gainsRef.current[trackId];
-      if (g) g.gain.value = value;
-    }
+  // Solo is a whole-mix decision — one track going solo silences every other
+  // track — so a single toggle has to re-derive the gain of all of them.
+  const applyTrackGains = useCallback((list) => {
+    const soloActive = list.some((t) => t.soloed);
+    list.forEach((t) => {
+      const g = gainsRef.current[t.id];
+      if (!g) return;
+      const audible = !t.muted && (!soloActive || t.soloed);
+      const target = audible ? t.volume : 0;
+      // A step change in gain mid-playback is an audible click, so ramp over
+      // 10ms instead. cancelScheduledValues first, or a fast series of clicks
+      // leaves earlier ramps queued and the last one does not win.
+      const now = g.context.currentTime;
+      g.gain.cancelScheduledValues(now);
+      g.gain.setValueAtTime(g.gain.value, now);
+      g.gain.linearRampToValueAtTime(target, now + 0.01);
+    });
   }, []);
 
-  // --- transport ---------------------------------------------------------
-
-  const applyTrackGains = useCallback(
-    (list) => {
-      const soloActive = list.some((t) => t.soloed);
-      list.forEach((t) => {
-        const g = gainsRef.current[t.id];
-        if (!g) return;
-        const audible = !t.muted && (!soloActive || t.soloed);
-        g.gain.value = audible ? t.volume : 0;
+  const setTrackProp = useCallback(
+    (trackId, prop, value) => {
+      setTracks((prev) => {
+        // Solo is exclusive, like a mixing desk: soloing one track drops the
+        // solo on every other, so the mix always answers "which single track
+        // am I hearing". Un-soloing just clears it.
+        const next = prev.map((t) => {
+          if (t.id === trackId) return { ...t, [prop]: value };
+          return prop === 'soloed' && value && t.soloed ? { ...t, soloed: false } : t;
+        });
+        // Volume, mute and solo have to take effect on the click, not at the
+        // next play. The gain nodes live outside React, so update them from
+        // the list just built — reading `tracks` here would be a render behind.
+        applyTrackGains(next);
+        return next;
       });
     },
-    [],
+    [applyTrackGains],
   );
+
+  // --- transport ---------------------------------------------------------
 
   const stopNodes = useCallback(() => {
     nodesRef.current.forEach((n) => {

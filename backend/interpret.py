@@ -53,6 +53,12 @@ class TrackSpec(BaseModel):
         description="Playing style for this track only, if different from the "
         "arrangement's. Usually empty.",
     )
+    midi: bool = Field(
+        default=False,
+        description="True to WRITE this part as editable MIDI notes instead of "
+        "generating audio. Choose it when the user asks for notes, MIDI, a "
+        "written phrase, or something they want to edit afterwards.",
+    )
 
 
 class Plan(BaseModel):
@@ -65,6 +71,12 @@ class Plan(BaseModel):
     key: str | None = Field(default=None, description="Tonic note, e.g. 'A', 'Bb'")
     mode: str | None = Field(default=None, description="'major' or 'minor'")
     bars: int | None = None
+    production: str = Field(
+        default="",
+        description="How the whole arrangement is recorded — room, mics, era, "
+        "tape, mix character. Shared by every part, which is what makes "
+        "separately generated stems sound like one band.",
+    )
     notes: str = Field(
         default="",
         description="One short line for the user: what was understood, and "
@@ -92,17 +104,54 @@ Rules:
     drums   unpitched percussion of any kind (kit, cymbals, timpani,
             congas, tambourine, shaker)
     harmony sustained pads, strings, choir, brass swells
+- NEVER substitute one named instrument for another. If the user says
+  "piano chords", the part is `piano` and the instrument says piano — not
+  guitar, not Rhodes, not "keys". A named instrument is the one thing in the
+  request you are not allowed to reinterpret. Only when the user names no
+  instrument at all ("something warm underneath") do you get to choose one.
+  When two parts could carry the role, the instrument's own family decides:
+  anything struck or keyed is `piano`, anything strummed or plucked with
+  frets is `guitar`.
+- `instrument` must repeat the instrument the user named, in its own words,
+  as the FIRST thing it says. "acoustic grand piano, close-miked, warm" is
+  right for "piano chords"; "warm chordal instrument" is not.
 - Never drop an instrument the user asked for. Produce one track for every
   one of them, and if the user says "4 more tracks", return four.
 - The user may want several tracks sharing a part — a xylophone and a piano
   are both `part: "piano"`. That is fine and expected. Give each a distinct
   `name`.
-- Infer tempo and key only when the user implies them ("slow", "in D minor",
-  "90 BPM"). Otherwise leave them null; the app has its own defaults.
+- Tempo, key and mode are part of the brief even when the user gives no
+  numbers. A mood implies them: "slow and sad" is not 120 BPM in C major.
+  Set `bpm`, `key` and `mode` whenever the request carries ANY musical
+  intent — a genre, a mood, an energy, a reference artist — and pick values
+  that a musician would actually choose for it:
+    sad, mournful, heartbroken     60-75 BPM, minor
+    calm, dreamy, ambient          70-90 BPM, major or minor
+    warm, hopeful, folky           90-110 BPM, major
+    driving, upbeat, pop/rock      110-130 BPM, major
+    dance, house, energetic        120-128 BPM, minor
+    aggressive, dark, trap/metal   70-90 or 140-160 BPM, minor
+  Leave them null ONLY when the request is purely about the sound of one
+  instrument and says nothing about the music ("swap the bass for a Rhodes").
+  Changing them is expected and wanted: the app updates its tempo and key
+  boxes from your answer, so a sad ballad request should return a slow tempo
+  and a minor key even if the session currently says 120 BPM C major.
+- `production` describes the RECORDING, not the music, and every part of the
+  arrangement is generated with it. This is the only thing making separately
+  generated stems sound like one band in one room, so it has to be concrete:
+  room size, mic distance, era, tape or digital, mix character. Six to twelve
+  words. E.g. "close-miked in a small dry studio, warm analog tape, gentle
+  compression" or "roomy 70s live take, ribbon mics, soft saturation". Never
+  name an instrument in it.
 - Put genre and mood in the top-level `style`. Use a track's own `style`
   only for something specific to that instrument.
 - `notes` is one short line addressed to the user. Do not restate the plan
   back to them — mention only substitutions, ambiguity, or anything ignored.
+- Set `midi: true` on a track when the user wants NOTES rather than a
+  recording: "write me a bassline", "compose a piano phrase", "give me a
+  MIDI riff I can edit". A MIDI track arrives in the piano roll and can be
+  edited note by note. Everything else stays `midi: false` and is generated
+  as audio.
 """
 
 
@@ -129,9 +178,11 @@ class Context(BaseModel):
         if self.key:
             lines.append(f"- key: {self.key} {self.mode or ''}".strip())
         lines.append(
-            "Unless the user is explicitly changing them, keep style, tempo and key "
-            "as they are and return only the NEW parts to add. Everything must sit "
-            "in the same arrangement as what is already there."
+            "Return only the NEW parts to add, and keep style, tempo and key as "
+            "they are unless the request carries a mood or genre of its own — a "
+            "request for something slow and sad should change them, a request to "
+            "swap one instrument should not. Everything must sit in the same "
+            "arrangement as what is already there."
         )
         return "\n".join(lines)
 
@@ -213,7 +264,8 @@ The json object must match this exact shape:
       "part": "bass | piano | guitar | drums | harmony | free",
       "name": "short track name",
       "instrument": "complete sound description, or empty string for the default",
-      "style": "track-specific style, usually empty"
+      "style": "track-specific style, usually empty",
+      "midi": false
     }}
   ],
   "style": "overall genre or mood, empty string if none",
@@ -222,6 +274,7 @@ The json object must match this exact shape:
   "key": null,
   "mode": null,
   "bars": null,
+  "production": "room, mics, era, tape and mix character - no instruments",
   "notes": ""
 }}
 
@@ -229,9 +282,34 @@ Important:
 - You are not allowed to call Stable Audio 3 directly.
 - You only create a plan for this app to execute.
 - Choose `free` for unknown instruments, textures, effects, or anything with no clear rhythmic role.
-- Preserve existing session tempo, key, style, and length unless the user explicitly changes them.
+- Keep the existing session tempo, key and style when the request is only
+  about adding or changing a sound. Change them when the request carries a
+  mood or genre of its own — a sad ballad in a session set to 120 BPM C
+  major should come back slow and minor.
 - If the user asks for a full arrangement, return bass, drums, piano, and harmony.
 """
+
+
+# Instruments whose family decides the part, whatever the model answered.
+# The model reassigns "piano chords" to `guitar` often enough that this is
+# worth enforcing in code: the part chooses the arranger, so a wrong part
+# is not a wording problem, it is the wrong notes in the wrong register.
+PART_BY_INSTRUMENT: list[tuple[str, str]] = [
+    (r"\bdrum|\bkit\b|percussion|conga|bongo|tabla|timpani|tambourine|shaker|cymbal|hi-?hat|snare", "drums"),
+    (r"\bbass\b|\b808\b|contrabass|upright bass|sub ?bass|tuba", "bass"),
+    (r"\bpiano\b|rhodes|wurlitzer|clavinet|harpsichord|celesta|organ|keys\b|xylophone|marimba|vibraphone|glockenspiel|kalimba|mallet", "piano"),
+    (r"\bguitar\b|\bukulele\b|banjo|mandolin|sitar|\bharp\b|lute", "guitar"),
+    (r"\bpad\b|\bstrings?\b|\bchoir\b|\bviolin|\bcello\b|\bviola\b|brass|\bhorns?\b|\bsynth pad\b|ensemble", "harmony"),
+]
+
+
+def _part_for_instrument(text: str) -> str | None:
+    """The part a named instrument belongs to, or None if nothing is named."""
+    lowered = text.lower()
+    for pattern, part in PART_BY_INSTRUMENT:
+        if re.search(pattern, lowered):
+            return part
+    return None
 
 
 def _sanitize(plan: Plan) -> Plan:
@@ -242,6 +320,19 @@ def _sanitize(plan: Plan) -> Plan:
     with a confusing error.
     """
     plan.tracks = [t for t in plan.tracks if t.part in PARTS]
+
+    # A named instrument wins over the part the model chose for it. Asking
+    # for piano chords and being handed a guitar is the single most visible
+    # way this feature fails, and it is entirely fixable here.
+    for track in plan.tracks:
+        named = _part_for_instrument(f"{track.name} {track.instrument}")
+        if named and named != track.part and named in PARTS:
+            log.info(
+                "part corrected: %r was %s, instrument says %s",
+                track.name, track.part, named,
+            )
+            track.part = named
+
     if plan.groove not in GROOVE_NAMES:
         plan.groove = grooves.for_style(plan.style).name
     if plan.mode not in ("major", "minor", None):

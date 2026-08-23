@@ -435,15 +435,22 @@ def generate_with_fallback(
     noise: float,
     duration: float,
     seed: int,
-) -> tuple[np.ndarray, str]:
+) -> tuple[np.ndarray, str, str | None]:
     """Generate, degrading to a working backend if the chosen one fails.
 
-    Returns (audio, backend_actually_used). A live demo must never show a
-    stack trace because the venue wifi dropped — it should quietly produce
-    something and tell the user what happened.
+    Returns (audio, backend_actually_used, fallback_error). A live demo must
+    never show a stack trace because the venue wifi dropped — it should
+    quietly produce something and tell the user what happened. The third
+    value is why the *requested* backend did not run, so the UI can say
+    "Stability returned HTTP 404" instead of leaving the user to wonder why
+    the result sounds like the mock.
     """
     chosen = get(backend_id)
     candidates = [chosen] + [BACKENDS[i] for i in FALLBACK_ORDER if BACKENDS[i].id != chosen.id]
+
+    failure: str | None = None
+    if not chosen.available():
+        failure = f"{chosen.id} is unavailable — {describe_state(chosen)}"
 
     last_error: Exception | None = None
     for backend in candidates:
@@ -451,12 +458,41 @@ def generate_with_fallback(
             continue
         try:
             audio = backend.generate(prompt, init_audio, noise, duration, seed)
-            return audio, backend.id
+            return audio, backend.id, failure if backend.id != chosen.id else None
         except Exception as error:  # noqa: BLE001 - any failure should fall through
             log.warning("backend %s failed: %s", backend.id, error)
             last_error = error
+            if backend.id == chosen.id:
+                failure = f"{backend.id} failed — {_error_summary(error)}"
 
     raise RuntimeError(f"all backends failed; last error: {last_error}")
+
+
+def describe_state(backend) -> str:
+    """Why a backend cannot run, in words a user can act on."""
+    note = getattr(backend, "note", "")
+    return note or "no reason given"
+
+
+def _error_summary(error: Exception) -> str:
+    """One line, with the HTTP status when there is one.
+
+    httpx raises HTTPStatusError for a bad response; its string form is three
+    lines of URL and doc link, which is useless in a toast. Pull out the code.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        detail = ""
+        try:
+            body = response.json()
+            detail = "; ".join(body.get("errors", [])) or body.get("message", "")
+        except Exception:  # noqa: BLE001 - body may not be JSON
+            detail = (response.text or "").strip()[:120]
+        code = f"HTTP {response.status_code}"
+        return f"{code}{f' ({detail})' if detail else ''}"
+    if isinstance(error, httpx.RequestError):
+        return f"network error — {type(error).__name__}"
+    return f"{type(error).__name__}: {error}".strip()[:160]
 
 
 # --- conversion helpers -------------------------------------------------

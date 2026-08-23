@@ -55,6 +55,10 @@ export const instrumentSamples = (body) => postJSON('/instrument/samples', body)
 export const interpret = (text, sessionId) =>
   postJSON('/interpret', { text, session_id: sessionId ?? null });
 
+// Describe a part in words, get back NOTES rather than audio. The phrase
+// lands on a MIDI track, so it stays editable in the piano roll.
+export const composeMidi = (body) => postJSON('/compose-midi', body);
+
 // Generate a clip guided by audio the user picked, rather than by a guide
 // track synthesized from the chord grid. `referenceWav` is a Blob.
 export async function generateFromReference({

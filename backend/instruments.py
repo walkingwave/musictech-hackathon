@@ -191,7 +191,7 @@ def generate_samples(
         if force or not path.exists():
             # Seeds vary per take: one seed would give near-identical
             # samples that sound cloned rather than like one instrument.
-            audio, backend_used = sa3_backend.generate_with_fallback(
+            audio, backend_used, _fallback_error = sa3_backend.generate_with_fallback(
                 backend_id=backend,
                 prompt=f"{prompt}, {SAMPLE_SUFFIX}",
                 init_audio=None,

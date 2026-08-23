@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react';
 
 // One clip: a block with a title strip, waveform, edge trim handles, and an
-// optional highlighted section. Behaviour depends on the active tool:
+// optional highlighted section. What a drag does depends on where it starts,
+// the way Ableton does it — no modal tool to remember:
 //
-//   move    drag body to reposition (snapped), drag edges to trim
-//   select  drag to highlight a section; drag again *inside* that highlight
-//           to cut it out as its own clip and move it
+//   title strip   drag to reposition the clip (snapped)
+//   waveform      drag to highlight a section; drag again *inside* that
+//                 highlight to cut it out as its own clip and move it
+//   edges         drag to trim
 //
 // The second gesture is the split: nothing is ever cut by a bare click, so a
 // misplaced click cannot silently chop a clip in half. You choose the region
@@ -16,7 +18,6 @@ export default function ClipView({
   color,
   pps,
   height,
-  tool,
   snapSec,
   selected,
   region,
@@ -128,36 +129,37 @@ export default function ClipView({
 
   const withinRegion = (t) => region && t >= region.a && t <= region.b;
 
-  const onPointerDown = (e) => {
+  // Grabbing the title strip moves the whole clip. Nothing else does, so a
+  // stray drag across the waveform can never shift a part off the beat.
+  const titleDown = (e) => {
     e.stopPropagation();
     onSelect();
-    const laneLeft = e.currentTarget.parentElement.getBoundingClientRect().left;
+    const origStart = clip.start;
+    dragFrom(e, (delta) => onMove(snap(origStart + delta)));
+  };
 
-    if (tool === 'range') {
-      const startT = eventTime(e, laneLeft);
+  // Dragging on the waveform highlights a section; dragging from inside an
+  // existing highlight pulls that section out as its own clip and moves it.
+  // The head and tail stay put.
+  const bodyDown = (e) => {
+    e.stopPropagation();
+    onSelect();
+    const laneLeft = e.currentTarget.parentElement.parentElement.getBoundingClientRect().left;
+    const startT = eventTime(e, laneLeft);
 
-      // Grabbing inside an existing highlight pulls that section out as its
-      // own clip and drags it. The head and tail stay put.
-      if (withinRegion(startT)) {
-        const from = region.a;
-        const extractedId = onExtract(region.a, region.b);
-        if (extractedId) dragFrom(e, (delta) => onMoveById(extractedId, snap(from + delta)));
-        return;
-      }
-
-      // Otherwise, drag out a new highlight.
-      dragFrom(e, (delta) => {
-        const cur = startT + delta;
-        const a = Math.max(clip.start, snap(Math.min(startT, cur)));
-        const b = Math.min(clip.start + clip.duration, snap(Math.max(startT, cur)));
-        onRange(a, b);
-      });
+    if (withinRegion(startT)) {
+      const from = region.a;
+      const extractedId = onExtract(region.a, region.b);
+      if (extractedId) dragFrom(e, (delta) => onMoveById(extractedId, snap(from + delta)));
       return;
     }
 
-    // move tool — reposition the whole clip
-    const origStart = clip.start;
-    dragFrom(e, (delta) => onMove(snap(origStart + delta)));
+    dragFrom(e, (delta) => {
+      const cur = startT + delta;
+      const a = Math.max(clip.start, snap(Math.min(startT, cur)));
+      const b = Math.min(clip.start + clip.duration, snap(Math.max(startT, cur)));
+      onRange(a, b);
+    });
   };
 
   const trimDown = (side) => (e) => {
@@ -177,30 +179,33 @@ export default function ClipView({
   };
 
   return (
-    <div
-      className={`clip${selected ? ' selected' : ''}${tool === 'range' ? ' selecting' : ''}`}
-      style={{ left, width, height }}
-      onPointerDown={onPointerDown}
-    >
-      <div className="clip-title" style={{ height: TITLE_H, background: color }}>
+    <div className={`clip${selected ? ' selected' : ''}`} style={{ left, width, height }}>
+      <div
+        className="clip-title"
+        style={{ height: TITLE_H, background: color }}
+        title="drag to move this clip"
+        onPointerDown={titleDown}
+      >
         {clip.part || (isMidi ? 'midi' : 'audio')}
       </div>
-      <canvas ref={canvasRef} style={{ width, height: height - TITLE_H, display: 'block' }} />
+      <canvas
+        ref={canvasRef}
+        className="clip-body"
+        style={{ width, height: height - TITLE_H, display: 'block' }}
+        onPointerDown={bodyDown}
+      />
       {region && (
         <div
           className="clip-region"
           title="drag to pull this section out as its own clip"
           style={{ left: (region.a - clip.start) * pps, width: (region.b - region.a) * pps }}
+          onPointerDown={bodyDown}
         >
           <span className="region-grip" />
         </div>
       )}
-      {tool === 'move' && (
-        <>
-          <span className="trim-handle left" onPointerDown={trimDown('left')} />
-          <span className="trim-handle right" onPointerDown={trimDown('right')} />
-        </>
-      )}
+      <span className="trim-handle left" onPointerDown={trimDown('left')} />
+      <span className="trim-handle right" onPointerDown={trimDown('right')} />
     </div>
   );
 }
