@@ -114,3 +114,81 @@ def _balance(audio: np.ndarray, target_rms: float) -> np.ndarray:
     if peak > PEAK_CEILING:
         out = out * (PEAK_CEILING / peak)
     return out
+
+
+# --- separation cleanup -------------------------------------------------
+
+# The soft mask never fully mutes a bin: hard spectral gates produce
+# "musical noise" (random tinkling), which is worse than the residue.
+_MASK_FLOOR = 0.12
+# How far above its own noise floor a bin must sit to pass untouched.
+_GATE_BETA = 1.6
+# Downward expansion below this fraction of the stem's own loud level.
+_EXPAND_THRESHOLD = 0.12
+
+
+def cleanup_separated(stem: np.ndarray, part: str) -> np.ndarray:
+    """Reduce separation residue without generating anything new.
+
+    Demucs leaves two audible artefacts: a broadband low-level smear under
+    the whole stem (the "grain"), and other instruments faintly bleeding in
+    the gaps where this part is not playing (the "mud"). Both live well
+    below the actual notes, so both respond to level-domain treatment:
+
+      spectral gate   per-frequency soft Wiener mask against the stem's own
+                      noise floor — pulls down bins that never rise much
+                      above their floor, which is exactly what residue does.
+      expander        pushes the near-silent stretches further down, so the
+                      gaps between notes are gaps rather than a wash of the
+                      rest of the band.
+
+    Everything here is subtractive and conservative — the audio that comes
+    out is only ever the audio that went in, quieter in the wrong places.
+    """
+    out = np.asarray(stem, dtype=np.float32)
+    if not out.size or float(np.abs(out).max()) < 1e-5:
+        return out
+    out = _spectral_gate(out)
+    out = _expand_quiet(out)
+    return out.astype(np.float32)
+
+
+def _spectral_gate(audio: np.ndarray) -> np.ndarray:
+    from scipy.signal import istft, stft
+
+    _, _, spec = stft(audio, fs=SAMPLE_RATE, nperseg=2048, noverlap=1536)
+    magnitude = np.abs(spec)
+
+    # Each frequency bin's own noise floor: the level it idles at when the
+    # instrument is not actively using it.
+    floor = np.percentile(magnitude, 20, axis=1, keepdims=True)
+    reference = (_GATE_BETA * floor) ** 2
+    mask = magnitude**2 / (magnitude**2 + reference + 1e-12)
+    mask = np.maximum(mask, _MASK_FLOOR)
+
+    _, cleaned = istft(spec * mask, fs=SAMPLE_RATE, nperseg=2048, noverlap=1536)
+    cleaned = np.asarray(cleaned, dtype=np.float32)
+    # stft/istft round-trip can differ by a few samples.
+    if len(cleaned) < len(audio):
+        cleaned = np.pad(cleaned, (0, len(audio) - len(cleaned)))
+    return cleaned[: len(audio)]
+
+
+def _expand_quiet(audio: np.ndarray) -> np.ndarray:
+    from scipy.signal import sosfilt, butter
+
+    # Short-window envelope, smoothed so the gain does not pump.
+    window = max(1, int(0.05 * SAMPLE_RATE))
+    kernel = np.ones(window, dtype=np.float32) / window
+    envelope = np.sqrt(np.convolve(np.square(audio), kernel, mode="same") + 1e-12)
+    envelope = sosfilt(butter(1, 20.0, btype="lowpass", fs=SAMPLE_RATE, output="sos"), envelope)
+    envelope = np.abs(np.asarray(envelope, dtype=np.float32)) + 1e-9
+
+    loud = float(np.percentile(envelope, 95))
+    threshold = _EXPAND_THRESHOLD * loud
+    if threshold <= 0:
+        return audio
+    # 2:1 downward expansion below the threshold, unity above.
+    ratio = np.minimum(1.0, envelope / threshold)
+    gain = np.where(envelope >= threshold, 1.0, ratio).astype(np.float32)
+    return audio * gain

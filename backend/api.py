@@ -121,6 +121,25 @@ async def analyze(file: UploadFile) -> dict:
     return {"session_id": session.id, "analysis": analysis.to_dict()}
 
 
+
+class RenameRequest(BaseModel):
+    name: str
+
+
+@app.patch("/api/session/{session_id}/name")
+def rename_session(session_id: str, request: RenameRequest) -> dict:
+    """Rename a session so the picker shows what the header shows.
+
+    Without this the rename lived only in the browser: the header said one
+    name and the Projects list said another, because the list is built from
+    the server's display_name.
+    """
+    session = _load(session_id)
+    name = request.name.strip()[:80]
+    if name:
+        session.set_display_name(name)
+    return {"display_name": name}
+
 @app.patch("/api/session/{session_id}/analysis")
 def update_analysis(session_id: str, edit: AnalysisEdit) -> dict:
     """Apply user corrections to the detected structure.
@@ -196,6 +215,76 @@ def generate(request: GenerateRequest) -> dict:
         "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
     }
 
+
+
+class SongTrack(BaseModel):
+    part: str
+    name: str | None = None
+    instrument: str = ""
+    voice_index: int = 0
+    voice_count: int = 1
+
+
+class SongRequest(BaseModel):
+    session_id: str
+    tracks: list[SongTrack]
+    style: str | None = None
+    production: str | None = None
+    backend: str | None = None
+    seed: int | None = None
+    bars: int | None = None
+
+
+
+@app.get("/api/session/{session_id}/progress")
+def session_progress(session_id: str) -> dict:
+    """What a long-running generate-song is doing right now.
+
+    The song pipeline (master take, separation, per-stem work) runs minutes
+    on CPU inside one POST; the UI polls this so the wait reads as progress
+    rather than a hang. Empty string means nothing is running.
+    """
+    return {"status": pipeline.PROGRESS.get(session_id, "")}
+
+@app.post("/api/generate-song")
+def generate_song(request: SongRequest) -> dict:
+    """Generate a whole arrangement master-first and return it as stems.
+
+    One model call renders the full band, then each stem is carved out of
+    that master — so the stems are one performance split apart, not separate
+    takes stacked. This is the endpoint the prompt bar uses for multi-track
+    plans; single tracks still go through /api/generate.
+    """
+    for track in request.tracks:
+        if track.part not in PARTS:
+            raise HTTPException(400, f"unknown part: {track.part}")
+    if not request.tracks:
+        raise HTTPException(400, "no tracks requested")
+
+    session = _load(request.session_id)
+    try:
+        with _generation_for(session.id):
+            results = pipeline.generate_song(
+                session,
+                tracks=[t.model_dump() for t in request.tracks],
+                style=request.style,
+                production=request.production,
+                backend=request.backend,
+                seed=request.seed,
+                bars=request.bars,
+            )
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from error
+
+    return {
+        "stems": [
+            {
+                **result.to_dict(),
+                "audio_url": f"/api/session/{session.id}/audio/stems/{result.name}.wav?v={result.seed}",
+            }
+            for result in results
+        ]
+    }
 
 class InterpretRequest(BaseModel):
     text: str

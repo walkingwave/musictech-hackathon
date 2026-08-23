@@ -46,7 +46,7 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 
 export default function Studio({
   engine, bpm, keyName, mode, onBpm, onKey, onMode, detected,
-  onGenerateStem, onComposeMidi, onApplySettings, onGenerateFromReference, onRenderMidi, sessionId,
+  onGenerateStem, onGenerateSong, onComposeMidi, onApplySettings, onGenerateFromReference, onRenderMidi, sessionId,
   instruments = [], onCreateInstrument, sampler, backend,
 }) {
   const {
@@ -386,49 +386,23 @@ export default function Studio({
     const ensemble = plan.tracks.length > 1 ? undefined : false;
 
     try {
-      for (const [i, spec] of plan.tracks.entries()) {
-        const part = spec.part;
-        const label = spec.name || part;
-        // Send the style only when this request actually carries one. Sending
-        // an empty string would re-pin the arrangement to "no style" and
-        // reset the groove for every part added afterwards.
-        const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
+      // MIDI specs are written note by note; audio specs are generated.
+      const midiSpecs = plan.tracks.filter((s) => s.midi);
+      const audioSpecs = plan.tracks.filter((s) => !s.midi);
 
-        // A MIDI track is written, not generated: notes come back in beats and
-        // go straight onto the timeline, so there is no audio round trip and
-        // the part stays editable in the piano roll.
-        if (spec.midi) {
-          setStatus(`Writing ${label} (${i + 1}/${plan.tracks.length})…`);
-          await onComposeMidi({
-            text: [spec.name, spec.instrument, spec.style, plan.style]
-              .filter(Boolean)
-              .join(', '),
-            bars: plan.bars || undefined,
-            style,
-          });
-          continue;
-        }
-
-        setStatus(`Generating ${label} (${i + 1}/${plan.tracks.length})…`);
-        // Sequential on purpose: the local model is a single instance, so
-        // parallel requests would only contend for it.
-        const result = await onGenerateStem({
-          part,
-          style,
-          name: spec.name,
-          instrument: spec.instrument,
-          // The recording description is shared by every part of the plan —
-          // it is what makes four separate model calls sound like one band.
-          production: plan.production || undefined,
-          // Position among the same-role tracks, so the backend can have the
-          // leads trade phrases and the comping parts lay out for each other.
-          voice_index: voices[i].index,
-          voice_count: roleTotals[voices[i].role] || 1,
-          ensemble,
-          // No seed on purpose: the backend reuses the arrangement's seed for
-          // every part, which keeps their timbre and room in the same place.
-          // The per-clip regenerate buttons still pass their own.
+      for (const [i, spec] of midiSpecs.entries()) {
+        const label = spec.name || spec.part;
+        setStatus(`Writing ${label} (${i + 1}/${midiSpecs.length})…`);
+        await onComposeMidi({
+          text: [spec.name, spec.instrument, spec.style, plan.style]
+            .filter(Boolean)
+            .join(', '),
+          bars: plan.bars || undefined,
+          style: [plan.style, spec.style].filter(Boolean).join(', ') || undefined,
         });
+      }
+
+      const addStem = async (result, part, label, style) => {
         const buffer = await decodeResult(result);
         addTrackWithClip(label[0].toUpperCase() + label.slice(1), part, buffer, {
           audioUrl: result.audio_url,
@@ -439,6 +413,49 @@ export default function Studio({
           backendUsed: result.backend_used,
           duration: result.duration || buffer.duration,
         });
+      };
+
+      if (audioSpecs.length > 1) {
+        // Master-first: the whole band is rendered as ONE record, then each
+        // stem is carved out of that master. Generating the parts as separate
+        // model calls — however much shared text and context they got — gave
+        // N performances that merely agreed on a key, and stacking them
+        // sounded exactly like that.
+        setStatus(`Recording the band (${audioSpecs.length} parts)…`);
+        const stems = await onGenerateSong({
+          onProgress: setStatus,
+          tracks: audioSpecs.map((spec, i) => ({
+            part: spec.part,
+            name: spec.name,
+            instrument: spec.instrument,
+            voice_index: voices[plan.tracks.indexOf(spec)].index,
+            voice_count: roleTotals[voices[plan.tracks.indexOf(spec)].role] || 1,
+          })),
+          style: plan.style || undefined,
+          production: plan.production || undefined,
+          bars: plan.bars || undefined,
+        });
+        for (const stem of stems) {
+          await addStem(stem, stem.part, stem.name || stem.part, plan.style);
+        }
+      } else {
+        for (const spec of audioSpecs) {
+          const part = spec.part;
+          const label = spec.name || part;
+          const style = [plan.style, spec.style].filter(Boolean).join(', ') || undefined;
+          setStatus(`Generating ${label}…`);
+          const result = await onGenerateStem({
+            part,
+            style,
+            name: spec.name,
+            instrument: spec.instrument,
+            production: plan.production || undefined,
+            voice_index: voices[plan.tracks.indexOf(spec)].index,
+            voice_count: roleTotals[voices[plan.tracks.indexOf(spec)].role] || 1,
+            ensemble,
+          });
+          await addStem(result, part, label, style);
+        }
       }
       setStatus(plan.notes || '');
     } catch (e) {

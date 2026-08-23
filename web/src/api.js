@@ -29,6 +29,14 @@ export async function analyze(blob, filename) {
   return api('/analyze', { method: 'POST', body: form });
 }
 
+
+// Rename a session server-side, so the Projects list agrees with the header.
+export const renameSession = (sessionId, name) =>
+  api(`/session/${sessionId}/name`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
 export const updateAnalysis = (sessionId, edit) =>
   api(`/session/${sessionId}/analysis`, {
     method: 'PATCH',
@@ -58,6 +66,13 @@ export const interpret = (text, sessionId, mode) =>
 // Describe a part in words, get back NOTES rather than audio. The phrase
 // lands on a MIDI track, so it stays editable in the piano roll.
 export const composeMidi = (body) => postJSON('/compose-midi', body);
+
+// Master-first: generate the whole band as one record, get it back split
+// into stems. Used for multi-track plans so the parts are one performance.
+export const generateSong = (body) => postJSON('/generate-song', body);
+
+// What the long-running song pipeline is doing right now, for the status bar.
+export const sessionProgress = (sessionId) => api(`/session/${sessionId}/progress`);
 
 // Generate a clip guided by audio the user picked, rather than by a guide
 // track synthesized from the chord grid. `referenceWav` is a Blob.

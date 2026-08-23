@@ -19,7 +19,12 @@ import numpy as np
 import pretty_midi
 import soundfile as sf
 
-from . import align, arrange, config, grooves, mix, prompts, render_guide, sa3_backend
+from . import align, arrange, config, grooves, prompts, render_guide, sa3_backend, separate
+
+# Imported by name: this module already has a `mix()` of its own (the export
+# mixdown), and the module import was silently shadowed by it.
+from .mix import cleanup_separated
+from .mix import polish as polish_stem
 from .analysis import analyze
 from .config import SAMPLE_RATE
 from .models import Analysis, Arrangement, Bar, Part, StemResult
@@ -391,7 +396,7 @@ def generate_stem(
     # it to its role, so five stems arriving at "as loud as possible" do not
     # fight — most of what reads as clashing is low-frequency masking plus a
     # level war, and both are fixable deterministically.
-    stem = mix.polish(stem, part)
+    stem = polish_stem(stem, part)
     session.write_audio(session.stem_path(name), stem)
 
     result = StemResult(
@@ -664,3 +669,203 @@ def mix(session: Session, parts: list[Part], include_vocal: bool = True) -> np.n
     # Headroom, so summing four stems does not clip.
     peak = float(np.max(np.abs(total)))
     return total if peak == 0 else (total / peak * 0.9).astype(np.float32)
+
+# Live status of long generate_song runs, keyed by session id. The whole
+# pipeline (master, two separations, per-stem work) can take minutes on CPU,
+# and a request that quiet looks hung — the UI polls this instead.
+PROGRESS: dict[str, str] = {}
+
+
+def _progress(session_id: str, message: str) -> None:
+    if message:
+        PROGRESS[session_id] = message
+    else:
+        PROGRESS.pop(session_id, None)
+
+
+
+def generate_song(
+    session: Session,
+    tracks: list[dict],
+    style: str | None = None,
+    production: str | None = None,
+    backend: str | None = None,
+    seed: int | None = None,
+    bars: int | None = None,
+) -> list[StemResult]:
+    """Master-first generation: one record, then carve the stems out of it.
+
+    Generating each part as its own model call — however much shared text,
+    seed and context they get — produces N separate performances that merely
+    agree on a key, and stacking them sounds exactly like that. This flips
+    the order: Stable Audio 3 renders the WHOLE band once (the thing it is
+    actually best at, since ensembles are most of its training data), and
+    then each stem is an audio-to-audio pass over that master asking for one
+    instrument, at low strength so the timing, harmony and room of the master
+    survive. Every stem is the same performance by construction — one track
+    split into stems, rather than stems hoping to add up to a track.
+    """
+    analysis = session.analysis
+    vocal, sr = session.read_vocal()
+
+    style, bars, production, tone_seed = _resolve_arrangement(
+        session, style, bars, analysis, production, seed
+    )
+    seed = seed if seed is not None else tone_seed
+    work = _extend_analysis(analysis, bars, 0)
+
+    # The master's guide is built from the REQUESTED parts — each track
+    # arranged with its own voice position, rendered, and summed. Two things
+    # depend on this being exact: an instrument absent from the guide cannot
+    # be carved out of the master (a quintet's guitar used to be missing
+    # entirely, so its "stem" was whatever the mask guessed), and the
+    # score-split templates must describe the SAME notes the master plays —
+    # they are these very guides.
+    template_guides: list[np.ndarray] = []
+    for t in tracks:
+        t_midi = arrange.arrange(
+            t["part"], work, vocal, sr, style=style, seed=seed,
+            voice_index=int(t.get("voice_index", 0)),
+            voice_count=int(t.get("voice_count", 1)),
+        )
+        template_guides.append(
+            render_guide.render(t_midi, duration=work.duration, part=t["part"])
+        )
+    master_guide = np.sum(template_guides, axis=0).astype(np.float32)
+    peak = float(np.abs(master_guide).max())
+    if peak > 0:
+        master_guide = master_guide * (0.8 / peak)
+    band = ", ".join(t.get("instrument") or t.get("name") or t["part"] for t in tracks)
+    master_prompt = prompts.build("mix", work, style, band, production)
+    log.info("master [%s] seed=%d bars=%d", master_prompt, seed, len(work.bars))
+
+    _progress(session.id, "Recording the master take…")
+    master_raw, master_backend, master_error = sa3_backend.generate_with_fallback(
+        backend_id=backend,
+        prompt=master_prompt,
+        init_audio=master_guide,
+        noise=config.MASTER_STRENGTH,
+        duration=work.duration,
+        seed=seed,
+    )
+    master = align.align(master_raw, master_guide, target_bpm=work.bpm)
+    # Kept on disk for debugging and for regenerating single stems later.
+    session.write_audio(session.guide_path("_master"), master)
+
+    results: list[StemResult] = []
+
+    # Split the master with a real source separator when one is installed.
+    # The generative carve ("only the piano from this recording") re-imagines
+    # the part instead of isolating it, so the stems came back mislabeled and
+    # only loosely related to the master; Demucs returns the master's own
+    # audio per instrument, so the stems are correct by definition.
+    separated: dict[str, np.ndarray] | None = None
+    timbre_evidence: dict[str, np.ndarray] = {}
+    if separate.available():
+        _progress(session.id, "Splitting the master into stems…")
+        want_evidence = any(
+            separate.source_for(t["part"], t.get("instrument") or t.get("name") or "")
+            in ("piano", "guitar")
+            for t in tracks
+        )
+        try:
+            separated, timbre_evidence = separate.separate(master, want_evidence)
+        except Exception as error:  # noqa: BLE001 - fall back to the carve
+            log.warning("separation failed, falling back to carve: %s", error)
+
+    # One pass over all requests, so shared sources can be split score-aware.
+    # The templates are the same guides the master was generated from, so
+    # they describe exactly the notes the master plays.
+    allocated: list[tuple[np.ndarray, str]] | None = None
+    if separated is not None:
+        allocated = separate.allocate(
+            separated,
+            [(t["part"], (t.get("instrument") or t.get("name") or "")) for t in tracks],
+            master,
+            templates=template_guides,
+            evidence=timbre_evidence,
+        )
+
+    for index, track in enumerate(tracks):
+        part = track["part"]
+        name = track.get("name") or part
+        _progress(session.id, f"Cutting {name}…")
+        instrument = (track.get("instrument") or "").strip()
+        voice_index = int(track.get("voice_index", 0))
+        voice_count = int(track.get("voice_count", 1))
+
+        if allocated is not None:
+            stem, source = allocated[index]
+            backend_used, fallback_error = master_backend, master_error
+            stem_prompt = f"{master_prompt} [demucs:{source}]"
+            # Deliberately untouched: both an SA3 refinement pass and DSP
+            # cleanup (spectral gate + expander) were tried here and both
+            # audibly hurt more than the separation residue they removed.
+            # The stem is the master's own audio, played as-is.
+            log.info("split stem %s <- demucs %s", name, source)
+        else:
+            described = instrument or prompts.INSTRUMENT_PHRASES.get(part, part)
+            stem_prompt = ", ".join(
+                piece
+                for piece in (
+                    f"only the {described} from this exact recording",
+                    "the identical performance with every other instrument removed",
+                    f"{round(work.bpm)} BPM",
+                    f"{work.key} {work.mode}",
+                    (production or "").strip(),
+                    prompts.ISOLATION.get(part, ""),
+                )
+                if piece
+            )
+            log.info("split stem %s [%s]", name, stem_prompt)
+            raw, backend_used, fallback_error = sa3_backend.generate_with_fallback(
+                backend_id=backend,
+                prompt=stem_prompt,
+                init_audio=master,
+                noise=config.SPLIT_STRENGTH,
+                duration=work.duration,
+                seed=seed,
+            )
+            stem = align.align(raw, master, target_bpm=work.bpm)
+
+        if allocated is None:
+            # Only the carve path is gated and polished: a separated stem IS
+            # the master's own performance — its arrangement, balance and
+            # spectrum are already right, and re-balancing or filtering it
+            # breaks the property that makes it good, which is that the
+            # stems sum back to the master. Play them all and you hear the
+            # master; mute one and exactly that part goes away.
+            stem = _gate_to_activity(
+                stem, work, arrange.activity(part, len(work.bars), voice_index, voice_count)
+            )
+            stem = polish_stem(stem, part)
+        session.write_audio(session.stem_path(name), stem)
+
+        # The MIDI export still comes from the arranger, so the user gets an
+        # editable approximation even though the audio came from the master.
+        part_midi = arrange.arrange(
+            part, work, vocal, sr, style=style, seed=seed,
+            voice_index=voice_index, voice_count=voice_count,
+        )
+        midi_path = session.midi_path(name)
+        part_midi.write(str(midi_path))
+
+        result = StemResult(
+            part=part,
+            name=name,
+            instrument=instrument,
+            wav_path=str(session.stem_path(name).relative_to(session.root)),
+            midi_path=str(midi_path.relative_to(session.root)),
+            backend_used=backend_used,
+            fallback_error=fallback_error or master_error,
+            prompt=stem_prompt,
+            noise=config.SPLIT_STRENGTH,
+            seed=seed,
+            duration=len(stem) / SAMPLE_RATE,
+            n_bars=len(work.bars),
+        )
+        session.save_stem(result)
+        results.append(result)
+
+    _progress(session.id, "")
+    return results

@@ -456,6 +456,13 @@ def _comp(
             notes.append(_seventh(bar.chord, voicing))
 
         for i, (position, length) in enumerate(groove.comp):
+            # Two comping parts on the same pattern play the same hits at
+            # the same instants — indistinguishable to the ear AND to the
+            # stem splitter, whose score templates then overlap completely.
+            # The second comp voice comps in the holes instead, the way a
+            # guitarist actually stays out of a pianist's way.
+            if human.voice_index % 2 == 1:
+                position = (position + 0.5) % 4.0
             start = bar.start + apply_swing(position, groove.swing) * beat
             if start >= bar.end:
                 continue

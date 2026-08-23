@@ -109,7 +109,26 @@ DEFAULT_STEPS = 8
 DEFAULT_BACKEND = os.environ.get("BTG_DEFAULT_BACKEND", "mock")
 STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY") or None
 
-STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio-2/audio-to-audio"
+# Stable Audio 3 lives on the *unversioned* `stable-audio` path. The
+# `stable-audio-2` path is a different, older service: its `model` field only
+# accepts 'stable-audio-2.5' | 'stable-audio-2', so pointing at it silently
+# generates with 2.5 no matter what the UI calls the backend.
+STABILITY_API_URL = "https://api.stability.ai/v2beta/audio/stable-audio/audio-to-audio"
+
+# The only value that endpoint accepts today, sent explicitly so a future
+# default flipping under us shows up as an error rather than a quiet downgrade.
+STABILITY_MODEL = "stable-audio-3"
+
+# Endpoint limits, for reference: duration <= 380s, steps <= 8, cfg_scale <= 25,
+# strength 0..1, seed >= 0, output_format 'wav' | 'mp3'.
+STABILITY_MAX_DURATION = 380
+
+# Stable Audio 3 is asynchronous: the generation call returns a job id and the
+# audio is collected from here. A bar or two of music comes back in seconds,
+# but the queue is shared, so the timeout is generous rather than tight.
+STABILITY_RESULTS_URL = "https://api.stability.ai/v2beta/results"
+STABILITY_POLL_INTERVAL = 2.0
+STABILITY_POLL_TIMEOUT = 300.0
 
 # --- chat agent --------------------------------------------------------
 
@@ -200,3 +219,22 @@ def ensure_dirs() -> None:
     """Create the directories the app writes to. Safe to call repeatedly."""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- master-first stem splitting ---------------------------------------
+
+# How far a stem may diverge from the master it is carved out of. Low on
+# purpose: the whole point is that every stem is the SAME performance with
+# the other instruments removed, so the model must keep the master's timing,
+# harmony and room and only re-render the balance. Raise it and the stems
+# drift back into being separate takes.
+SPLIT_STRENGTH = 0.6
+
+# The master itself diverges freely from its synthetic guide — the guide is
+# a crude sketch and the master is the record.
+MASTER_STRENGTH = 0.85
+
+# How far the per-stem refinement pass may drift from the separated stem it
+# re-renders. The separated stem is the right performance with separation
+# artifacts on it; refinement is SA3 re-recording that exact part cleanly.
+# Low, because the input is already the truth — only the timbre needs work.
+REFINE_STRENGTH = 0.35

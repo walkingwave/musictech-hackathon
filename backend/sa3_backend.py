@@ -349,14 +349,20 @@ class LocalBackend:
 
 
 class StabilityAPIBackend:
-    """Stability's hosted audio-to-audio endpoint.
+    """Stable Audio 3 Large, on Stability's hosted audio-to-audio endpoint.
+
+    `large` is API-only — there are no open weights for it, so this is the
+    only way to reach it. The model is named explicitly in the request rather
+    than left to the endpoint's default: the neighbouring `stable-audio-2`
+    path serves 2.5 and takes the same fields, so a wrong URL degrades
+    silently instead of failing.
 
     Responses are cached on disk keyed by the full request, so re-running
     an identical generation costs neither a credit nor a round trip.
     """
 
     id = "api"
-    label = "Stability API — large"
+    label = "Stability API — Stable Audio 3 Large"
     note = "best quality, uses credits, needs network"
 
     def available(self) -> bool:
@@ -378,27 +384,74 @@ class StabilityAPIBackend:
 
         response = httpx.post(
             config.STABILITY_API_URL,
-            headers={
-                "Authorization": f"Bearer {config.STABILITY_API_KEY}",
-                "Accept": "audio/*",
-            },
+            headers=self._headers("audio/*"),
             files={"audio": ("guide.wav", wav_bytes, "audio/wav")},
             data={
+                "model": config.STABILITY_MODEL,
                 "prompt": prompt,
                 "strength": str(noise),
-                "duration": str(int(duration)),
-                "seed": str(seed),
+                "duration": str(min(int(duration), config.STABILITY_MAX_DURATION)),
+                "seed": str(max(0, int(seed))),
                 "output_format": "wav",
             },
             timeout=180.0,
         )
         response.raise_for_status()
 
-        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(response.content)
+        audio_bytes = self._resolve(response)
 
-        audio, _ = sf.read(io.BytesIO(response.content), dtype="float32")
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(audio_bytes)
+
+        audio, _ = sf.read(io.BytesIO(audio_bytes), dtype="float32")
         return _to_mono_numpy(audio)
+
+    @staticmethod
+    def _headers(accept: str) -> dict[str, str]:
+        """Auth plus an `Accept` the endpoint being called will take.
+
+        The two endpoints disagree about it, and each rejects the other's
+        value, so it cannot be shared: the generation call wants `audio/*`
+        (`*/*` is a 400), while the results call wants `*/*` (`audio/*` is a
+        400, and `application/json` makes it try to wrap a wav in a JSON
+        shape it does not have and return a 500).
+        """
+        return {
+            "Authorization": f"Bearer {config.STABILITY_API_KEY}",
+            "Accept": accept,
+        }
+
+    def _resolve(self, response: httpx.Response) -> bytes:
+        """The finished wav, whether the endpoint answered now or queued a job.
+
+        Stable Audio 3 is asynchronous: the POST returns `202 Accepted` with a
+        job id, and the audio has to be collected from `/v2beta/results/{id}`,
+        which itself answers `202` until the job finishes. Older endpoints
+        return the wav from the POST directly, so both are handled - a `200`
+        is already the audio.
+        """
+        if response.status_code == 200:
+            return response.content
+
+        job_id = response.json().get("id")
+        if not job_id:
+            raise RuntimeError(f"no job id in {response.status_code} response")
+
+        url = f"{config.STABILITY_RESULTS_URL}/{job_id}"
+        deadline = time.monotonic() + config.STABILITY_POLL_TIMEOUT
+        log.info("api job %s queued, polling", job_id[:8])
+
+        while time.monotonic() < deadline:
+            time.sleep(config.STABILITY_POLL_INTERVAL)
+            result = httpx.get(url, headers=self._headers("*/*"), timeout=60.0)
+            if result.status_code == 200:
+                return result.content
+            if result.status_code != 202:
+                result.raise_for_status()
+
+        raise RuntimeError(
+            f"job {job_id[:8]} not finished after {config.STABILITY_POLL_TIMEOUT:.0f}s"
+        )
 
 
 # --- registry -----------------------------------------------------------
@@ -503,6 +556,10 @@ def _cache_key(prompt: str, init_audio: np.ndarray, noise: float, duration: floa
     digest.update(prompt.encode())
     digest.update(init_audio.tobytes())
     digest.update(f"{noise}|{duration}|{seed}".encode())
+    # The model is part of the request, so it has to be part of the key -
+    # otherwise everything cached from the old 2.5 endpoint would be replayed
+    # as if it came from 3 Large.
+    digest.update(f"|{config.STABILITY_MODEL}".encode())
     return digest.hexdigest()
 
 

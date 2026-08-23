@@ -20,6 +20,13 @@ export default function App() {
     return stored && stored !== 'mock' ? stored : 'local';
   });
   const [sessionId, setSessionId] = useState(null);
+  // Mirror of sessionId that async flows can trust. State reads inside a
+  // long-running handler are frozen at render time, so "apply settings"
+  // creating a session and the generate right after it each saw null and
+  // each created their own — every prompt run leaked a blank "Untitled"
+  // session into the Projects list.
+  const sessionIdRef = useRef(null);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   const [analysis, setAnalysis] = useState(null);
   const [fileName, setFileName] = useState(null);
   // A user-chosen session name, editable in the top bar. Falls back to the
@@ -108,11 +115,21 @@ export default function App() {
   const clearProject = useCallback(() => {
     engine.clear();
     project.clear();
+    sessionIdRef.current = null;
     setSessionId(null);
     setAnalysis(null);
     setFileName(null);
     setPrompt('');
     setView('input');
+    setSessionPickerOpen(false);
+    // The name and the musical settings belong to the project being closed.
+    // Leaving them meant a "new" project opened already named after the old
+    // one and pinned to its tempo and key.
+    setProjectName('');
+    localStorage.removeItem('projectName');
+    setStudioBpm(120);
+    setStudioKey('C');
+    setStudioMode('major');
     vocalWavRef.current = null;
     vocalAddedRef.current = false;
   }, [engine, project]);
@@ -133,12 +150,16 @@ export default function App() {
       if (!meta.analysis) throw new Error('session has not been analyzed yet');
       engine.clear();
       project.clear();
+      sessionIdRef.current = id;
       setSessionId(id);
       setAnalysis(meta.analysis);
       setStudioBpm(meta.analysis.bpm);
       setStudioKey(meta.analysis.key);
       setStudioMode(meta.analysis.mode);
       setFileName(meta.display_name || `Session ${id}`);
+      // The loaded project's own name, not whatever the last one was called.
+      setProjectName('');
+      localStorage.removeItem('projectName');
       vocalWavRef.current = null;
       vocalAddedRef.current = false;
       for (const stem of Object.values(meta.stems || {})) {
@@ -189,6 +210,7 @@ export default function App() {
 
   const isLostSession = (error) => /404|no such session/i.test(error.message || '');
   const resetSession = useCallback(() => {
+    sessionIdRef.current = null;
     setSessionId(null);
     setAnalysis(null);
     setFileName(null);
@@ -218,9 +240,18 @@ export default function App() {
 
   const displayName = projectName || fileName || 'Untitled';
 
+  // Rename locally at every keystroke, and push to the server debounced so
+  // the Projects list shows the same name as the header. Without the push,
+  // the two drifted apart permanently — the list is built server-side.
+  const renameTimerRef = useRef(null);
   const renameSession = (name) => {
     setProjectName(name);
     localStorage.setItem('projectName', name);
+    if (!sessionId) return;
+    clearTimeout(renameTimerRef.current);
+    renameTimerRef.current = setTimeout(() => {
+      apiClient.renameSession(sessionId, name).catch(() => {});
+    }, 500);
   };
 
   // The whole project as a zip: every stem, its MIDI, the vocal and a
@@ -283,17 +314,20 @@ export default function App() {
   // Composing without a recording still needs a session, since every stage
   // keys off an Analysis. Make a blank one on first use.
   const ensureSession = useCallback(async () => {
-    if (sessionId) return sessionId;
+    // The ref, not the state: this runs mid-flow, after applyMusicalSettings
+    // may have created the session in the same handler.
+    if (sessionIdRef.current) return sessionIdRef.current;
     const result = await apiClient.createBlankSession({
       bpm: studioBpm,
       key: studioKey,
       mode: studioMode,
       bars,
     });
+    sessionIdRef.current = result.session_id;
     setSessionId(result.session_id);
     setAnalysis(result.analysis);
     return result.session_id;
-  }, [sessionId, studioBpm, studioKey, studioMode, bars]);
+  }, [studioBpm, studioKey, studioMode, bars]);
 
   const generateStem = useCallback(
     async (opts) => {
@@ -320,6 +354,42 @@ export default function App() {
     [sessionId, prompt, backend, ensureSession, warnOnFallback],
   );
 
+
+  // Master-first song generation: one call renders the whole band, the
+  // stems come back carved out of that master. Used by the prompt bar for
+  // multi-track plans so the parts are one performance split apart.
+  const generateSongStems = useCallback(
+    async ({ tracks, style, production, bars: songBars, onProgress }) => {
+      const id = await ensureSession();
+      // The song pipeline runs minutes inside one request; poll its live
+      // stage so the wait reads as progress rather than a hang.
+      const poll = onProgress
+        ? setInterval(async () => {
+            try {
+              const { status } = await apiClient.sessionProgress(id);
+              if (status) onProgress(status);
+            } catch {
+              /* polling is best-effort */
+            }
+          }, 2000)
+        : null;
+      try {
+        const result = await apiClient.generateSong({
+          session_id: id,
+          tracks,
+          style,
+          production,
+          bars: songBars,
+          backend,
+        });
+        (result.stems || []).forEach(warnOnFallback);
+        return result.stems || [];
+      } finally {
+        if (poll) clearInterval(poll);
+      }
+    },
+    [backend, ensureSession, warnOnFallback],
+  );
   const ensureVocalTrack = useCallback(async () => {
     if (vocalAddedRef.current || !vocalWavRef.current) return;
     const buffer = await engine.context().decodeAudioData(await vocalWavRef.current.arrayBuffer());
@@ -441,8 +511,9 @@ export default function App() {
       if (mode) setStudioMode(mode);
       if (!bpm && !key && !mode) return;
       try {
-        if (sessionId) {
-          const updated = await apiClient.updateAnalysis(sessionId, {
+        const current = sessionIdRef.current;
+        if (current) {
+          const updated = await apiClient.updateAnalysis(current, {
             bpm: bpm ?? null,
             key: key ?? null,
             mode: mode ?? null,
@@ -461,13 +532,14 @@ export default function App() {
           mode: mode ?? studioMode,
           bars,
         });
+        sessionIdRef.current = result.session_id;
         setSessionId(result.session_id);
         setAnalysis(result.analysis);
       } catch (error) {
         flash(`Tempo and key were not saved — ${error.message}`);
       }
     },
-    [sessionId, studioBpm, studioKey, studioMode, bars, flash],
+    [studioBpm, studioKey, studioMode, bars, flash],
   );
 
   // Words -> notes. The agent writes a phrase, it lands on a MIDI track with
@@ -576,6 +648,7 @@ export default function App() {
           onKey={setStudioKey}
           onMode={setStudioMode}
           onGenerateStem={studioGenerate}
+          onGenerateSong={generateSongStems}
           onComposeMidi={composeMidiTrack}
           onApplySettings={applyMusicalSettings}
           onGenerateFromReference={studioGenerateFromReference}

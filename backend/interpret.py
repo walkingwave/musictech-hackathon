@@ -392,6 +392,11 @@ Important:
   about adding or changing a sound. Change them when the request carries a
   mood or genre of its own — a sad ballad in a session set to 120 BPM C
   major should come back slow and minor.
+- A named ENSEMBLE counts as naming its members. "Jazz quartet" is four
+  tracks — the named lead plus the rhythm section (e.g. sax, piano, double
+  bass, drums); a trio is three; "full band" is drums, bass, a chordal part
+  and a lead. "A sax solo with a jazz quartet" means the quartet plays too:
+  return every member, not just the soloist.
 - Return EXACTLY the instruments the user named, and nothing else. "Give me a
   drum backing track" is one drums track — not drums plus a bass, a piano and
   a lead to go with it. Never add a part they did not ask for, however
